@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Environment Variables & Secrets
+.env
+*.env
+!*.env.example
+*.pem
+*.key
+*serviceAccountKey*.json
+*firebase_credentials*.json
+
+# Sightline Runtime Data & SQLite
+sightline-data/
+core/sightline-data/
+*.db
+*.db-shm
+*.db-wal
+
+# Editor & OS temp files
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Android & Gradle
+.gradle/
+control/.gradle/
+**/build/
+control/app/build/
+local.properties
+*.apk
+*.aab
+*.dex
+.cxx/

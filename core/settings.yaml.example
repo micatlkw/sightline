@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Sightline Surveillance Core — Settings Configuration Example
+# Copy or mount this file to /config/settings.yaml.
+# Changes to this file are automatically detected and hot-reloaded at runtime.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Global Detection Defaults ─────────────────────────────────────────────────
+# YOLO weights model file (e.g. yolo11n.pt, yolo11s.pt, yolo11m.pt)
+yolo_model: yolo11n.pt
+
+# Default target classes for all cameras (unless overridden per camera below).
+# You can use string names (e.g. ["person", "car", "dog"]) or numeric COCO IDs.
+#
+# Available COCO 80 classes reference:
+#   Vehicles:  person (0), bicycle (1), car (2), motorcycle (3), airplane (4),
+#              bus (5), train (6), truck (7), boat (8)
+#   Animals:   bird (14), cat (15), dog (16), horse (17), sheep (18), cow (19),
+#              elephant (20), bear (21), zebra (22), giraffe (23)
+#   Outdoor:   traffic light (9), fire hydrant (10), stop sign (11), parking meter (12),
+#              bench (13), backpack (24), umbrella (25), handbag (26)
+target_classes:
+  - person
+  - car
+  - motorcycle
+  - truck
+  - cat
+  - dog
+  - bear
+
+# Global minimum confidence threshold (0.01 - 1.0)
+confidence_threshold: 0.45
+
+# Keyframe sample interval: 30 = 1 frame/sec for 30fps video clips
+vid_stride: 30
+
+# ── Camera Definitions & Per-Camera Overrides ─────────────────────────────────
+# Serial-to-name mapping and optional per-camera detection & notification overrides.
+# If target_classes, confidence_threshold, or cooldown_seconds is omitted,
+# the camera inherits the global defaults above.
+cameras:
+  - name: "Backyard"
+    serial: "CAM0100000001"
+    enabled: true
+    target_classes: ["person", "cat", "dog", "bear"]
+
+  - name: "Frontdoor"
+    serial: "CAM0200000002"
+    enabled: true
+    target_classes: ["person", "dog"]
+    confidence_threshold: 0.45
+    cooldown_seconds: 20
+
+# ── Notifications ────────────────────────────────────────────────────────────
+# Global minimum seconds between alerts per camera (prevents alert storms)
+alert_cooldown_seconds: 60
+
+# Apprise notification URLs (supports 80+ backends: ntfy, Pushover, Discord, etc.)
+apprise_urls:
+  # - "ntfys://ntfy.sh/my-topic?priority=high&tags=camera"
+
+# Path to Firebase service account JSON for FCM push notifications
+firebase_credentials_path: "/models/firebase_credentials.json"
+
+# ── Ingestion & File Watcher ─────────────────────────────────────────────────
+# Directory where camera clips are written
+incoming_dir: "/data/incoming"
+
+# Directory where clips are moved after processing
+processed_dir: "/data/processed"
+
+# Seconds of stable (unchanging) file size before processing a clip
+clip_stable_seconds: 2.0
+
+# Scan incoming directory for unprocessed clips on startup
+scan_on_startup: true
+
+# false = inotify (recommended for local filesystem / Synology NAS)
+# true  = polling fallback (use if watch_dir is an NFS/SMB network mount)
+watch_use_polling: false
+
+# ── Web UI & API Ports ──────────────────────────────────────────────────────
+# Internal REST API port (default 8000 for local NAS/automations)
+api_port: 8000
+
+# Web Dashboard UI port (default 8080 - safe to expose via Reverse Proxy / Google SSO)
+ui_port: 8080
+
+# ── HTTPS & Reverse Proxy (Caddy) ──────────────────────────────────────────
+# Optional public domain name for automatic Let's Encrypt TLS (e.g. "cam.example.com").
+# If null or empty, Caddy uses its internal CA (self-signed) for local IP / LAN access.
+domain_name: null
+
+# Contact email for Let's Encrypt certificate renewal notices
+acme_email: null
+
+# Host HTTPS port exposed by Caddy (default 8443, change to 443 if available on host)
+https_port: 8443
+
+# Host HTTP port exposed by Caddy for redirecting to HTTPS (default 8080)
+http_port: 8080
+
+# Optional custom SSL certificate and private key paths (e.g. Synology DSM certificates)
+ssl_cert_path: null
+ssl_key_path: null
+
+# Set to true when running behind Cloudflare Tunnel (uses internal TLS, Docker aliases, and CF-Connecting-IP)
+tunnel_mode: false
+
+# Optional static LAN IP addresses or hostnames to include in Caddy's internal TLS cert
+lan_hosts: []
+
+# ── Authentication (Google SSO) ──────────────────────────────────────────────
+# Allowed Google emails. If empty, authentication is bypassed (local dev mode).
+allowed_google_emails: []
+
+# Dedicated admin Google emails permitted to manage camera configurations over WAN
+admin_google_emails: []
+
+# Optional Google OAuth client ID
+google_client_id: null
+
+# ── System Paths ─────────────────────────────────────────────────────────────
+db_path: "/data/sightline.db"
+models_dir: "/models"
+thumbnails_dir: "/data/thumbnails"

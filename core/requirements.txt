@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+aiosqlite>=0.20.0
+pydantic-settings>=2.5.2
+watchdog>=5.0.3
+apprise>=1.9.0
+google-auth>=2.35.0
+firebase-admin>=6.5.0
+pyyaml>=6.0.2
+

@@ -1,0 +1,15 @@
+[Unit]
+Description=Arlo USB to Synology Sync Daemon
+After=network-online.target usb-gadget-init.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -u /usr/local/bin/arlo_sync.py
+Restart=always
+RestartSec=3s
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: sightline-caddy
+    restart: unless-stopped
+    ports:
+      - "${HTTPS_PORT:-4210}:${HTTPS_PORT:-4210}"
+      - "${HTTP_PORT:-4280}:${HTTP_PORT:-4280}"
+    volumes:
+      # Caddyfile generated and updated by sightline-core
+      - /volume1/sightline/config:/config
+      # Persistent TLS certificates and keys issued by Let's Encrypt / internal CA
+      - /volume1/sightline/caddy_data:/data
+    command: caddy run --config /config/Caddyfile --watch
+    depends_on:
+      - sightline-core
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: sightline-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      - caddy
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+
+  sightline-core:
+    build: .
+    image: sightline-core:latest
+    container_name: sightline-core
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    expose:
+      - "8080"
+    volumes:
+      # Live app source mount (instant updates without image rebuild)
+      - ./app:/app/app
+      # Incoming camera clips (read-write to move to processed directory)
+      - /volume1/sightline/incoming:/data/incoming
+      # Persistent data: SQLite DB + thumbnails + processed archive
+      - /volume1/sightline/data:/data
+      # Cached YOLO model weights (avoids re-download on restart)
+      - /volume1/sightline/models:/models
+      # Config directory
+      - /volume1/sightline/config:/config
+      # Host local timezone inheritance (Synology DSM uses /etc/TZ and /etc/localtime)
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/TZ:/etc/TZ:ro
+    env_file: .env
+    environment:
+      - PUID=${PUID:-1026}
+      - PGID=${PGID:-100}
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+      - TUNNEL_MODE=${TUNNEL_MODE:-}
+
+
+
+#volumes:
+#  sightline-data:
+#  sightline-models:
