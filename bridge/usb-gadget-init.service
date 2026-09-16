@@ -1,0 +1,11 @@
+[Unit]
+Description=Initialize USB Mass Storage Gadget
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup_usb_gadget.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

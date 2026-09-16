@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sightline-core"
+version = "0.1.0"
+description = "Event-driven surveillance engine"
+requires-python = ">=3.11"
+
+# NOTE: ultralytics, torch (cpu), and opencv-python-headless are already
+# present in the ultralytics/ultralytics:latest-cpu base image and must NOT
+# be re-listed here (pip would upgrade/conflict with the pinned build).
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "aiosqlite>=0.20",
+    "pydantic-settings>=2.3",
+    "watchdog>=4.0",
+    "apprise>=1.9",
+    "google-auth>=2.20",
+    "firebase-admin>=6.5",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
