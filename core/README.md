@@ -676,3 +676,20 @@ target_classes:
 ### Downloading or switching YOLO models
 - When changing `yolo_model` (e.g. from `yolo11n.pt` to `yolo11s.pt` or `yolov8n.pt`), the model weights will be automatically downloaded by Ultralytics on container startup and saved in the persistent `/models` volume.
 
+---
+
+## Acknowledgements & Trademarks
+
+### Upstream Open-Source Projects
+Sightline is built on top of several outstanding open-source projects:
+
+- **[Ultralytics YOLO](https://github.com/ultralytics/ultralytics)** (GNU AGPL-3.0): Real-time object detection models and inference engine.
+- **[PyTorch](https://pytorch.org/)** (BSD-style): Deep learning compute framework and tensor acceleration.
+- **[FastAPI](https://fastapi.tiangolo.com/)** & **[Uvicorn](https://www.uvicorn.org/)** (MIT / BSD-3-Clause): Asynchronous REST API and high-performance ASGI server.
+- **[Caddy](https://caddyserver.com/)** (Apache 2.0): Automated TLS reverse proxy and HTTP security middleware.
+- **[Font Awesome Free](https://fontawesome.com/)** (SIL OFL 1.1 / CC BY 4.0 / MIT): Web dashboard iconography.
+- **[Apprise](https://github.com/caronc/apprise)** (BSD-3-Clause): Multi-service push notification delivery framework.
+
+### Trademark Notice
+All product names, logos, and brands mentioned in this documentation (including **Arlo**, **Synology**, **DSM**, **Google**, **Firebase**, and **Cloudflare**) are the property of their respective owners. Their use in this project is strictly for identification and compatibility purposes and does not imply any affiliation, sponsorship, or endorsement by their respective holders.
+
