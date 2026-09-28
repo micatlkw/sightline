@@ -55,8 +55,12 @@ MDIR_FILE_RE = re.compile(
 # Runtime State
 state = {
     "last_hex_dir": "000000",
-    "watermarks": {}  # camera_serial -> max_synced_sequence (int)
+    "watermarks": {},          # camera_serial -> max_synced_sequence (int)
+    "synced_files": [],        # list of filenames synced in active directories
+    "pending_unfinalized": {}  # filename -> {first_seen, last_size, last_size_change, filepath, camera_serial, seq_num}
 }
+synced_files_set: set[str] = set()
+idle_retry_counts: dict[str, int] = {}
 in_progress_logged: set[str] = set()
 in_progress_polls: dict[str, list[datetime]] = {}
 running = True
@@ -255,10 +259,38 @@ def parse_arlo_filename(filename: str):
     return None
 
 
+def seed_synced_from_disk(active_dirs: list[str]):
+    """
+    Initial migration: Marks all files currently on disk with seq <= watermark
+    as synced so the daemon starts clean and only reconciles future misses.
+    """
+    global synced_files_set
+    scopes = [f"a:/arlo/{d}/*.mp4" for d in active_dirs]
+    try:
+        proc = subprocess.run(["mdir"] + scopes, capture_output=True, text=True, env=MTOOLS_ENV, check=False)
+        count = 0
+        for line in proc.stdout.splitlines():
+            m = MDIR_FILE_RE.match(line.strip())
+            if m:
+                filename = m.group(2)
+                parsed = parse_arlo_filename(filename)
+                if parsed:
+                    camera_serial, seq_num, _, _ = parsed
+                    watermark = state["watermarks"].get(camera_serial, -1)
+                    if seq_num <= watermark:
+                        synced_files_set.add(filename)
+                        count += 1
+        state["synced_files"] = list(synced_files_set)
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Initial migration: seeded {count} existing files (seq <= watermark) as synced.")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error during seed_synced_from_disk: {e}")
+
+
 def load_state():
     """Loads state from JSON file, or initializes fresh defaults."""
-    global state
+    global state, synced_files_set
     os.makedirs(os.path.dirname(STATE_FILE_JSON), exist_ok=True)
+    loaded_synced = False
 
     if os.path.exists(STATE_FILE_JSON):
         try:
@@ -266,22 +298,34 @@ def load_state():
                 data = json.load(f)
                 state["last_hex_dir"] = data.get("last_hex_dir", "000000")
                 state["watermarks"] = data.get("watermarks", {})
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Loaded state: last_hex_dir={state['last_hex_dir']}, {len(state['watermarks'])} camera watermarks.")
-            return
+                state["pending_unfinalized"] = data.get("pending_unfinalized", {})
+                if "synced_files" in data:
+                    state["synced_files"] = data["synced_files"]
+                    synced_files_set = set(state["synced_files"])
+                    loaded_synced = True
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Loaded state: last_hex_dir={state['last_hex_dir']}, "
+                f"{len(state['watermarks'])} watermarks, {len(state['pending_unfinalized'])} pending, "
+                f"{len(synced_files_set)} synced files."
+            )
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Error loading {STATE_FILE_JSON}: {e}. Initializing fresh state.")
 
-    state["last_hex_dir"] = "000000"
-    state["watermarks"] = {}
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Initialized fresh watermark state.")
+    if not loaded_synced:
+        # Seed synced_files for current active directories (seq <= watermark)
+        active_dirs = get_active_hex_directories()
+        seed_synced_from_disk(active_dirs)
+        save_state()
 
 
 def save_state():
-    """Persists current watermarks and active folder cursor atomically with hardware fsync."""
+    """Persists current watermarks, pending files, and active folder cursor atomically with hardware fsync."""
     tmp_path = f"{STATE_FILE_JSON}.tmp"
     data = {
         "last_hex_dir": state["last_hex_dir"],
         "watermarks": state["watermarks"],
+        "pending_unfinalized": state.get("pending_unfinalized", {}),
+        "synced_files": list(synced_files_set),
         "updated_at": datetime.now().isoformat()
     }
     try:
@@ -292,6 +336,33 @@ def save_state():
         os.replace(tmp_path, STATE_FILE_JSON)
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Error saving state to {STATE_FILE_JSON}: {e}")
+
+
+def check_pending_timeouts():
+    """
+    Checks tracked pending unfinalized files.
+    If a clip has had no size changes for > 30 minutes, declare it abandoned
+    by Arlo (e.g. power lost during camera recording) and remove from active pending.
+    """
+    now = datetime.now()
+    expired = []
+    pending = state.get("pending_unfinalized", {})
+    for fn, info in list(pending.items()):
+        last_change_str = info.get("last_size_change", info.get("first_seen"))
+        try:
+            last_change = datetime.fromisoformat(last_change_str)
+            if (now - last_change) > timedelta(minutes=30):
+                expired.append(fn)
+        except Exception:
+            pass
+
+    for fn in expired:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Pending clip {fn} timed out (>30m with no size change). Expiring from active pending.")
+        pending.pop(fn, None)
+        in_progress_logged.discard(fn)
+        in_progress_polls.pop(fn, None)
+    if expired:
+        save_state()
 
 
 def get_active_hex_directories(force_refresh: bool = False) -> list[str]:
@@ -336,6 +407,9 @@ def get_active_hex_directories(force_refresh: bool = False) -> list[str]:
                 f"({last_recorded} -> {latest_disk_dir}). Resetting watermarks."
             )
             state["watermarks"].clear()
+            state.get("pending_unfinalized", {}).clear()
+            synced_files_set.clear()
+            state["synced_files"] = []
             state["last_hex_dir"] = latest_disk_dir
             save_state()
         elif int(latest_disk_dir, 16) > int(last_recorded, 16):
@@ -355,12 +429,16 @@ def get_active_hex_directories(force_refresh: bool = False) -> list[str]:
     return list(_cached_active_dirs)
 
 
-def list_unsynced_candidates(active_dirs: list[str]) -> list[tuple[str, int, str, int]]:
+def list_unsynced_candidates(active_dirs: list[str]) -> tuple[list[tuple[str, int, str, int]], list[tuple[str, int, str, int]]]:
     """
     Single-pass mdir scanner across active hex directories.
-    Filters files purely by checking if sequence > camera watermark.
+    Returns:
+      (active_candidates, idle_candidates)
+      - active_candidates: new clips (seq > watermark) or actively pending clips.
+      - idle_candidates: valid clips on disk not in synced_files and not active.
     """
-    results = []
+    active_candidates = []
+    idle_candidates = []
     scopes = [f"a:/arlo/{d}/*.mp4" for d in active_dirs]
     cmd = ["mdir"] + scopes
 
@@ -374,9 +452,12 @@ def list_unsynced_candidates(active_dirs: list[str]) -> list[tuple[str, int, str
         )
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Error executing mdir on {IMG_FILE}: {e}")
-        return []
+        return [], []
 
     current_dir = "A:/"
+    current_disk_filenames = set()
+    pending = state.get("pending_unfinalized", {})
+
     for line in proc.stdout.splitlines():
         line_clean = line.strip()
 
@@ -390,6 +471,10 @@ def list_unsynced_candidates(active_dirs: list[str]) -> list[tuple[str, int, str
             size_bytes = int(file_match.group(1))
             filename = file_match.group(2)
             filepath = f"{current_dir}/{filename}"
+            current_disk_filenames.add(filename)
+
+            if filename in synced_files_set:
+                continue
 
             parsed = parse_arlo_filename(filename)
             if not parsed:
@@ -398,18 +483,34 @@ def list_unsynced_candidates(active_dirs: list[str]) -> list[tuple[str, int, str
             camera_serial, seq_num, _, _ = parsed
             watermark = state["watermarks"].get(camera_serial, -1)
 
-            # Pure sequence watermark check: only candidates with sequence > watermark
-            if seq_num > watermark and size_bytes > 0:
-                results.append((filepath, size_bytes, camera_serial, seq_num))
+            if size_bytes <= 0:
+                continue
 
-    return results
+            is_new = (seq_num > watermark)
+            is_pending = (filename in pending)
+
+            if is_new or is_pending:
+                active_candidates.append((filepath, size_bytes, camera_serial, seq_num))
+            else:
+                # seq_num <= watermark but NOT in synced_files_set and not pending:
+                # Previously skipped/missed clip!
+                idle_candidates.append((filepath, size_bytes, camera_serial, seq_num))
+
+    # Keep synced_files_set bounded to active directories to prevent memory growth
+    if len(synced_files_set) > 2000:
+        synced_files_set.intersection_update(current_disk_filenames)
+        state["synced_files"] = list(synced_files_set)
+
+    return active_candidates, idle_candidates
 
 
-def sync_to_synology(filepath: str, expected_size: int, camera_serial: str, seq_num: int) -> bool:
+def sync_to_synology(
+    filepath: str, expected_size: int, camera_serial: str, seq_num: int, is_idle_reconcile: bool = False
+) -> bool:
     """
     Stages clip into RAM disk (/dev/shm), validates MP4 container finalization (< 1ms),
     streams from RAM to Synology NAS watch folder via atomic rename (.tmp -> .mp4),
-    and advances the camera watermark only upon verified completion.
+    and advances the camera watermark and synced tracking only upon verified completion.
     """
     filename = os.path.basename(filepath)
     if not FILE_RE.match(filename):
@@ -441,6 +542,25 @@ def sync_to_synology(filepath: str, expected_size: int, camera_serial: str, seq_
         valid, reason = is_valid_mp4(ram_path)
         val_ms = (time.perf_counter() - t_val_start) * 1000.0
         if not valid:
+            now_iso = datetime.now().isoformat()
+            pending = state.setdefault("pending_unfinalized", {})
+            actual_ram_size = os.path.getsize(ram_path) if os.path.exists(ram_path) else expected_size
+            if filename not in pending:
+                pending[filename] = {
+                    "first_seen": now_iso,
+                    "last_size": actual_ram_size,
+                    "last_size_change": now_iso,
+                    "filepath": filepath,
+                    "camera_serial": camera_serial,
+                    "seq_num": seq_num
+                }
+                save_state()
+            else:
+                if actual_ram_size != pending[filename].get("last_size", 0):
+                    pending[filename]["last_size"] = actual_ram_size
+                    pending[filename]["last_size_change"] = now_iso
+                    save_state()
+
             if filename not in in_progress_logged:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Arlo recording in progress for {filename}: {reason}")
                 in_progress_logged.add(filename)
@@ -471,7 +591,13 @@ def sync_to_synology(filepath: str, expected_size: int, camera_serial: str, seq_
         smb_ms = (time.perf_counter() - t_smb_start) * 1000.0
         smb_mb_s = (actual_size / (1024 * 1024)) / (smb_ms / 1000.0) if smb_ms > 0 else 0.0
 
-        # Step 5: Advance watermark for this camera
+        # Step 5: Mark as synced and clean up pending state
+        synced_files_set.add(filename)
+        state["synced_files"] = list(synced_files_set)
+        state.get("pending_unfinalized", {}).pop(filename, None)
+        idle_retry_counts.pop(filename, None)
+
+        # Advance watermark for this camera if higher
         curr_max = state["watermarks"].get(camera_serial, -1)
         if seq_num > curr_max:
             state["watermarks"][camera_serial] = seq_num
@@ -499,8 +625,9 @@ def sync_to_synology(filepath: str, expected_size: int, camera_serial: str, seq_
         except Exception:
             pass
 
+        reconcile_tag = " [Idle Reconciled]" if is_idle_reconcile else ""
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Synced & Verified: {filename} ({actual_size:,} bytes) [Camera: {camera_serial}, Seq: {seq_num}]\n"
+            f"[{datetime.now().strftime('%H:%M:%S')}] Synced & Verified: {filename} ({actual_size:,} bytes) [Camera: {camera_serial}, Seq: {seq_num}]{reconcile_tag}\n"
             f"           └─ Breakdown: Extract: {extract_ms:.1f}ms | Validate: {val_ms:.2f}ms | SMB Copy: {smb_ms:.1f}ms ({smb_mb_s:.1f} MB/s){cam_finalize_str} | Video: {video_dur:.1f}s{cam_rec_str} | Sync Lag: {sync_lag:.2f}s"
         )
         return True
@@ -560,31 +687,50 @@ def main():
         poll_interval = POLL_INTERVAL_IDLE_SEC
 
         try:
+            check_pending_timeouts()
+
             active_dirs = get_active_hex_directories()
-            candidates = list_unsynced_candidates(active_dirs)
+            active_candidates, idle_candidates = list_unsynced_candidates(active_dirs)
             current_active_filenames = set()
 
-            if candidates:
+            if active_candidates:
                 # Active operations detected: use faster polling
                 poll_interval = POLL_INTERVAL_ACTIVE_SEC
 
-            for filepath, size, camera_serial, seq_num in candidates:
-                filename = os.path.basename(filepath)
-                current_active_filenames.add(filename)
-                if sync_to_synology(filepath, size, camera_serial, seq_num):
-                    in_progress_logged.discard(filename)
-                    in_progress_polls.pop(filename, None)
-                    # If file synced was in a higher hex dir than last_recorded, refresh dir cache
-                    parent_dir = os.path.basename(os.path.dirname(filepath))
-                    if HEX_DIR_RE.match(parent_dir) and int(parent_dir, 16) > int(state.get("last_hex_dir", "000000"), 16):
-                        state["last_hex_dir"] = parent_dir
-                        save_state()
-                        get_active_hex_directories(force_refresh=True)
+                for filepath, size, camera_serial, seq_num in active_candidates:
+                    filename = os.path.basename(filepath)
+                    current_active_filenames.add(filename)
+                    if sync_to_synology(filepath, size, camera_serial, seq_num):
+                        in_progress_logged.discard(filename)
+                        in_progress_polls.pop(filename, None)
+                        # If file synced was in a higher hex dir than last_recorded, refresh dir cache
+                        parent_dir = os.path.basename(os.path.dirname(filepath))
+                        if HEX_DIR_RE.match(parent_dir) and int(parent_dir, 16) > int(state.get("last_hex_dir", "000000"), 16):
+                            state["last_hex_dir"] = parent_dir
+                            save_state()
+                            get_active_hex_directories(force_refresh=True)
 
-            in_progress_logged.intersection_update(current_active_filenames)
-            for fn in list(in_progress_polls.keys()):
-                if fn not in current_active_filenames:
-                    in_progress_polls.pop(fn, None)
+                in_progress_logged.intersection_update(current_active_filenames)
+                for fn in list(in_progress_polls.keys()):
+                    if fn not in current_active_filenames:
+                        in_progress_polls.pop(fn, None)
+
+            elif idle_candidates:
+                # System is completely idle: process at most 1 skipped clip gently
+                filepath, size, camera_serial, seq_num = idle_candidates[0]
+                filename = os.path.basename(filepath)
+                retries = idle_retry_counts.get(filename, 0)
+                if retries >= 3:
+                    # Avoid tight loop on permanently unreadable file
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping permanently failed idle clip {filename} after 3 attempts.")
+                    synced_files_set.add(filename)
+                    state["synced_files"] = list(synced_files_set)
+                    save_state()
+                else:
+                    idle_retry_counts[filename] = retries + 1
+                    if sync_to_synology(filepath, size, camera_serial, seq_num, is_idle_reconcile=True):
+                        in_progress_logged.discard(filename)
+                        in_progress_polls.pop(filename, None)
 
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Sync loop error: {e}")
