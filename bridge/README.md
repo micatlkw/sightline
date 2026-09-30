@@ -209,7 +209,7 @@ Ensure the bridge SBC can write directly to the incoming watch directory used by
 
 3. **Add persistent mount entry to `/etc/fstab`**:
    ```bash
-   echo '//YOUR_SYNOLOGY_IP/docker/sightline-core/storage/watch /mnt/synology_watch cifs credentials=/etc/synology/cifs.creds,iocharset=utf8,_netdev,nofail,uid=0,gid=0,file_mode=0777,dir_mode=0777 0 0' | sudo tee -a /etc/fstab
+   echo '//YOUR_SYNOLOGY_IP/docker/sightline-core/storage/watch /mnt/synology_watch cifs credentials=/etc/synology/cifs.creds,iocharset=utf8,actimeo=30,rsize=1048576,wsize=1048576,_netdev,nofail,uid=0,gid=0,file_mode=0777,dir_mode=0777 0 0' | sudo tee -a /etc/fstab
    ```
 
 4. **Mount and test write permissions**:
@@ -293,7 +293,7 @@ Trigger motion on one of your Arlo cameras. Within seconds after the recording e
 ```text
 [14:22:05] Arlo recording in progress for 52A1234567890_0001a4_20260912_142200.mp4: Unfinalized atom mdat (size 0 extends to EOF) at offset 32
 [14:22:08] Synced & Verified: 52A1234567890_0001a4_20260912_142200.mp4 (4,194,304 bytes) [Camera: 52A1234567890, Seq: 420]
-           └─ Breakdown: Extract: 18.2ms | Validate: 0.85ms | SMB Copy: 42.1ms (99.6 MB/s) | Cam Finalize: 1.20s (2 polls post-EOF) | Video: 12.0s | Cam Rec: 14:22:00 -> 14:22:12 | Sync Lag: 1.28s
+           └─ Breakdown: Extract: 18.2ms | Validate: 0.85ms | SMB Net Write: 42.1ms (99.6 MB/s) | NAS Commit: 15.3ms | Cam Finalize: 1.20s (2 polls post-EOF) | Video: 12.0s | Cam Rec: 14:22:00 -> 14:22:12 | Sync Lag: 1.28s
 ```
 
 ---
@@ -306,7 +306,8 @@ Each synchronized clip produces a structured log breakdown:
 | :--- | :--- | :--- |
 | **Extract** | Time taken by `mcopy` to copy raw bytes from the FAT32 image to RAM staging (`/dev/shm`). | 10 ms – 50 ms |
 | **Validate** | Time to parse top-level MP4 container boxes (`ftyp`, `mdat`, `moov`) in memory. | 0.4 ms – 1.2 ms |
-| **SMB Copy** | Network transfer time and throughput streaming 1 MB blocks from RAM to the Synology share. | 30 ms – 120 ms (50–110 MB/s on Gigabit LAN) |
+| **SMB Net Write** | Network transfer time and throughput streaming 1 MB blocks from RAM to the Synology share buffer. | 30 ms – 120 ms (50–110 MB/s on Gigabit LAN, 10–25 MB/s on Wi-Fi) |
+| **NAS Commit** | Time taken by the Synology NAS to flush kernel buffers, close the file, verify size, and atomically rename `.tmp` to `.mp4`. Spikes here indicate HDD spin-up or Synology disk I/O load. | 10 ms – 60 ms (drives active), 5s – 10s (HDD spin-up from sleep) |
 | **Cam Finalize** | Time elapsed between the video end timestamp and Arlo writing the final `moov` box. | 0.8 s – 2.5 s |
 | **Polls post-EOF**| Number of 0.5s poll checks where Arlo was still closing/indexing the file. | 1 – 5 polls |
 | **Video** | Exact video duration extracted from the MP4 `mvhd` atom. | e.g., 10.0s – 120.0s |
