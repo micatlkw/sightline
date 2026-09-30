@@ -246,8 +246,16 @@ async def list_events(
         limit=limit,
         offset=offset,
     )
+    total = await db.get_events_count(
+        camera=camera,
+        cls=cls,
+        date=date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     return {
         "events": [e.to_dict() for e in events],
+        "total": total,
         "limit": limit,
         "offset": offset,
     }

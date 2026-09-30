@@ -480,6 +480,53 @@ class Database:
             rows = await cur.fetchall()
         return [_row_to_event(row, mapping) for row in rows]
 
+    async def get_events_count(
+        self,
+        camera: Optional[str] = None,
+        cls: Optional[str] = None,
+        date: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> int:
+        query = "SELECT COUNT(*) as cnt FROM events WHERE 1=1"
+        params: list = []
+
+        if camera:
+            serial = None
+            if self._settings and hasattr(self._settings, "get_camera_config"):
+                cam_cfg = self._settings.get_camera_config(camera)
+                if cam_cfg:
+                    serial = cam_cfg.serial
+            if serial:
+                query += " AND (camera_name = ? OR camera_name = ? OR camera_name LIKE ?)"
+                params.extend([camera, serial, f"{serial}_%"])
+            else:
+                query += " AND (camera_name = ? OR camera_name LIKE ?)"
+                params.extend([camera, f"{camera}_%"])
+        if cls:
+            if cls.lower() in ("none", "no_detection", "no_detections", "empty"):
+                query += " AND (objects = '[]' OR objects IS NULL OR objects = '')"
+            elif cls.lower() == "all_including_none":
+                pass
+            else:
+                query += ' AND objects LIKE ?'
+                params.append(f'%"class": "{cls}"%')
+        else:
+            query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
+        if date:
+            query += " AND detected_at LIKE ?"
+            params.append(f"{date}%")
+        if start_date:
+            query += " AND detected_at >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND detected_at <= ?"
+            params.append(end_date)
+
+        async with self._conn.execute(query, params) as cur:
+            row = await cur.fetchone()
+            return int(row["cnt"]) if row and row["cnt"] is not None else 0
+
     async def get_event(self, event_id: int) -> Optional[EventRecord]:
         mapping = self._settings.get_camera_mapping() if self._settings and hasattr(self._settings, "get_camera_mapping") else None
         async with self._conn.execute(
