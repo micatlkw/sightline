@@ -575,9 +575,21 @@ def sync_to_synology(
         video_dur = get_mp4_duration(ram_path)
 
         # Step 3: Stream finalized file from RAM disk to Synology NAS watch folder (1MB buffer)
-        t_smb_start = time.perf_counter()
-        with open(ram_path, "rb") as fsrc, open(nas_tmp, "wb") as fdst:
+        t_net_start = time.perf_counter()
+        fsrc = open(ram_path, "rb")
+        fdst = open(nas_tmp, "wb")
+        try:
             shutil.copyfileobj(fsrc, fdst, length=1024 * 1024)
+            fdst.flush()
+        finally:
+            fsrc.close()
+        t_write_done = time.perf_counter()
+        net_write_ms = (t_write_done - t_net_start) * 1000.0
+        net_mb_s = (actual_size / (1024 * 1024)) / (net_write_ms / 1000.0) if net_write_ms > 0 else 0.0
+
+        # Step 4: Flush kernel CIFS pages, close, verify, and atomically commit on NAS
+        t_commit_start = time.perf_counter()
+        fdst.close()
 
         # Verify transfer size on NAS
         if os.path.getsize(nas_tmp) != actual_size:
@@ -586,10 +598,9 @@ def sync_to_synology(
             print(f"[{datetime.now().strftime('%H:%M:%S')}] NAS transfer size mismatch for {filename}")
             return False
 
-        # Step 4: Atomically commit the complete MP4 on NAS
+        # Atomically commit the complete MP4 on NAS
         os.replace(nas_tmp, nas_final)
-        smb_ms = (time.perf_counter() - t_smb_start) * 1000.0
-        smb_mb_s = (actual_size / (1024 * 1024)) / (smb_ms / 1000.0) if smb_ms > 0 else 0.0
+        commit_ms = (time.perf_counter() - t_commit_start) * 1000.0
 
         # Step 5: Mark as synced and clean up pending state
         synced_files_set.add(filename)
@@ -628,7 +639,7 @@ def sync_to_synology(
         reconcile_tag = " [Idle Reconciled]" if is_idle_reconcile else ""
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Synced & Verified: {filename} ({actual_size:,} bytes) [Camera: {camera_serial}, Seq: {seq_num}]{reconcile_tag}\n"
-            f"           └─ Breakdown: Extract: {extract_ms:.1f}ms | Validate: {val_ms:.2f}ms | SMB Copy: {smb_ms:.1f}ms ({smb_mb_s:.1f} MB/s){cam_finalize_str} | Video: {video_dur:.1f}s{cam_rec_str} | Sync Lag: {sync_lag:.2f}s"
+            f"           └─ Breakdown: Extract: {extract_ms:.1f}ms | Validate: {val_ms:.2f}ms | SMB Net Write: {net_write_ms:.1f}ms ({net_mb_s:.1f} MB/s) | NAS Commit: {commit_ms:.1f}ms{cam_finalize_str} | Video: {video_dur:.1f}s{cam_rec_str} | Sync Lag: {sync_lag:.2f}s"
         )
         return True
 
@@ -659,6 +670,60 @@ def handle_shutdown(signum, frame):
     sys.exit(0)
 
 
+def optimize_nas_mount():
+    """
+    Ensures CIFS mount at NAS_DEST is tuned with actimeo=30,rsize=1048576,wsize=1048576.
+    If running as root and mount lacks these options, remounts and updates /etc/fstab.
+    """
+    if os.geteuid() != 0:
+        return
+    try:
+        # Check /proc/mounts
+        with open("/proc/mounts", "r") as f:
+            mounts = f.read()
+        target_opts = None
+        for line in mounts.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] == NAS_DEST and parts[2] == "cifs":
+                target_opts = parts[3]
+                break
+
+        if target_opts and ("actimeo=30" not in target_opts or "wsize=1048576" not in target_opts):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Tuning CIFS mount options on {NAS_DEST} (actimeo=30,rsize=1048576,wsize=1048576)...")
+            res = subprocess.run(
+                ["mount", "-o", "remount,actimeo=30,rsize=1048576,wsize=1048576", NAS_DEST],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if res.returncode == 0:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Successfully remounted {NAS_DEST} with optimized CIFS options.")
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Remount warning: {res.stderr.strip()}")
+
+        # Update /etc/fstab if needed
+        if os.path.exists("/etc/fstab"):
+            with open("/etc/fstab", "r") as f:
+                fstab_content = f.read()
+            new_lines = []
+            fstab_changed = False
+            for line in fstab_content.splitlines():
+                if NAS_DEST in line and "cifs" in line and "actimeo=30" not in line:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        opts = parts[3]
+                        opts = f"{opts},actimeo=30,rsize=1048576,wsize=1048576"
+                        line = f"{parts[0]} {parts[1]} {parts[2]} {opts} {' '.join(parts[4:])}"
+                        fstab_changed = True
+                new_lines.append(line)
+            if fstab_changed:
+                with open("/etc/fstab", "w") as f:
+                    f.write("\n".join(new_lines) + "\n")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Updated /etc/fstab with optimized CIFS mount options.")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] NAS mount tuning warning: {e}")
+
+
 def main():
     signal.signal(signal.SIGINT, handle_shutdown)    # Ctrl+C
     signal.signal(signal.SIGTERM, handle_shutdown)   # systemctl stop / kill
@@ -672,6 +737,7 @@ def main():
     os.makedirs(NAS_DEST, exist_ok=True)
     cleanup_staging_dir()
     load_state()
+    optimize_nas_mount()
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Monitoring {IMG_FILE} -> {NAS_DEST} (RAM Disk Staging + Pure Sequence Watermark + Instant MP4 Validation)")
 

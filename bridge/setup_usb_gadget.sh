@@ -92,5 +92,5 @@ echo "[setup_usb_gadget] Gadget initialization complete."
 # Add the persistent mount to /etc/fstab:
 
 # Bash
-# echo '//YOUR_SYNOLOGY_IP/docker/sightline-core/storage/watch /mnt/synology_watch cifs credentials=/etc/synology/cifs.creds,iocharset=utf8,_netdev,nofail 0 0' | sudo tee -a /etc/fstab
+# echo '//YOUR_SYNOLOGY_IP/docker/sightline-core/storage/watch /mnt/synology_watch cifs credentials=/etc/synology/cifs.creds,iocharset=utf8,actimeo=30,rsize=1048576,wsize=1048576,_netdev,nofail 0 0' | sudo tee -a /etc/fstab
 # sudo mount -a
