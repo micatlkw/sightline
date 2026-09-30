@@ -354,17 +354,6 @@
             <span>Filters</span>
           </div>
           <div class="flex items-center gap-2">
-            <!-- Items Per Page (Compact Selector) -->
-            <div class="flex items-center gap-1.5">
-              <label for="filterLimit" class="hidden sm:inline text-[11px] font-medium text-slate-400">Show:</label>
-              <select id="filterLimit" onchange="applyFilters()" class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-brand-500 cursor-pointer">
-                <option value="10" selected>10 / page</option>
-                <option value="20">20 / page</option>
-                <option value="30">30 / page</option>
-                <option value="40">40 / page</option>
-                <option value="50">50 / page</option>
-              </select>
-            </div>
             <button id="btnToggleBatchMode" onclick="toggleBatchMode()" class="text-[11px] sm:text-xs text-slate-400 hover:text-brand-400 transition flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-slate-800 cursor-pointer" title="Select multiple videos">
               <i class="fa-solid fa-list-check"></i>
               <span id="btnBatchModeLabel">Select</span>
@@ -476,7 +465,11 @@
         </div>
       </div>
 
-      <!-- Events Grid Container -->
+      <!-- Top Sentinel & Top Spacer for Sliding Window -->
+      <div id="eventsTopSentinel" class="h-1 w-full pointer-events-none opacity-0"></div>
+      <div id="eventsTopSpacer" class="w-full transition-none" style="height: 0px;"></div>
+
+      <!-- Events Grid Container (Strictly holds max ~30 cards) -->
       <div id="eventsContainer" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
         <!-- Cards injected dynamically via JS -->
       </div>
@@ -493,16 +486,25 @@
         </button>
       </div>
 
-      <!-- Pagination / Load More -->
+      <!-- Bottom Sentinel & Autoloading State -->
+      <div id="eventsBottomSentinel" class="w-full py-4 flex flex-col items-center justify-center min-h-[48px]">
+        <div id="eventsLoadingSpinner" class="hidden flex items-center gap-2.5 text-xs text-brand-400 font-medium py-2">
+          <i class="fa-solid fa-circle-notch fa-spin text-sm"></i>
+          <span>Autoloading more clips...</span>
+        </div>
+        <div id="eventsEndOfTimeline" class="hidden text-xs text-slate-500 font-mono py-2 flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
+          <span>End of recorded events</span>
+          <span class="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
+        </div>
+      </div>
+
+      <!-- Status Indicator & Jump to Top -->
       <div id="eventsPagination" class="flex items-center justify-between pt-4 border-t border-slate-800/80">
-        <div id="eventsCounterText" class="text-xs text-slate-400">Showing 0 events</div>
+        <div id="eventsCounterText" class="text-xs text-slate-400 font-mono">Showing 0 events</div>
         <div class="flex items-center gap-2">
-          <button id="btnPrevPage" onclick="changePage(-1)" disabled class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-700 transition">
-            <i class="fa-solid fa-chevron-left mr-1"></i> Previous
-          </button>
-          <span id="currentPageBadge" class="text-xs font-mono px-2.5 py-1 bg-slate-900 border border-slate-700 rounded-lg text-slate-300">Page 1</span>
-          <button id="btnNextPage" onclick="changePage(1)" disabled class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-700 transition">
-            Next <i class="fa-solid fa-chevron-right ml-1"></i>
+          <button onclick="scrollToTopAndResetWindow()" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-xs text-slate-300 hover:text-white border border-slate-700/80 transition flex items-center gap-1.5 cursor-pointer">
+            <i class="fa-solid fa-arrow-up text-[10px]"></i> Top
           </button>
         </div>
       </div>
@@ -1150,6 +1152,11 @@
     </div>
   </div>
 
+  <!-- Floating Back to Top Button -->
+  <button id="btnFloatingBackToTop" onclick="scrollToTopAndResetWindow()" class="fixed bottom-6 right-6 z-40 hidden w-11 h-11 rounded-full bg-brand-600/90 hover:bg-brand-500 text-white shadow-2xl backdrop-blur-md transition-all transform hover:scale-110 active:scale-95 border border-brand-400/40 flex items-center justify-center cursor-pointer" title="Back to Top (Event #1)">
+    <i class="fa-solid fa-arrow-up text-sm"></i>
+  </button>
+
   <!-- ── Toast Notification Container ──────────────────────────────────────── -->
   <div id="toastContainer" class="fixed bottom-5 right-5 z-50 space-y-2.5 max-w-sm w-full pointer-events-none"></div>
 
@@ -1170,8 +1177,15 @@
     let activeSettingsSubTab = 'cameras';
     let expandedCameraIndices = new Set();
     let allEvents = [];
-    let currentPage = 0;
-    let limitPerPage = 10;
+    const BATCH_SIZE = 10;
+    const MAX_WINDOW_CARDS = 30;
+    let totalEventsCount = 0;
+    let windowStartIndex = 0;
+    let windowEndIndex = 0;
+    let topSpacerHeight = 0;
+    let isAutoloading = false;
+    let bottomObserver = null;
+    let topObserver = null;
     let currentSettings = null;
     let ws = null;
     let authStatus = null;
@@ -1941,6 +1955,7 @@
       await loadSettings();
       initWebSocket();
       initModalSwipeGestures();
+      initSlidingWindowObservers();
       checkUrlEventDeepLink();
     }
 
@@ -2320,7 +2335,6 @@
       }
 
       closeCalendarPopover();
-      currentPage = 0;
       fetchEvents();
     }
 
@@ -2385,7 +2399,6 @@
       }
       updateCalendarTriggerText();
       updateDatePresetButtons(preset);
-      currentPage = 0;
       fetchEvents();
     }
 
@@ -2395,7 +2408,6 @@
       document.getElementById('filterCamera').value = '';
       document.getElementById('filterClass').value = '';
       updateDatePresetButtons('');
-      currentPage = 0;
       fetchEvents();
     }
 
@@ -2411,34 +2423,30 @@
     });
 
     function applyFilters() {
-      currentPage = 0;
-      fetchEvents();
-    }
-
-    function changePage(delta) {
-      currentPage = Math.max(0, currentPage + delta);
       fetchEvents();
     }
 
     async function fetchEvents() {
       const container = document.getElementById('eventsContainer');
       const emptyState = document.getElementById('eventsEmptyState');
-      const counterText = document.getElementById('eventsCounterText');
-      const pageBadge = document.getElementById('currentPageBadge');
-      const limit = parseInt(document.getElementById('filterLimit').value) || 10;
-      const offset = currentPage * limit;
+      const topSpacer = document.getElementById('eventsTopSpacer');
+      const endBadge = document.getElementById('eventsEndOfTimeline');
+      const spinner = document.getElementById('eventsLoadingSpinner');
 
-      let url = `/api/v1/events?limit=${limit}&offset=${offset}`;
+      // Reset sliding window
+      allEvents = [];
+      windowStartIndex = 0;
+      windowEndIndex = 0;
+      topSpacerHeight = 0;
+      if (topSpacer) topSpacer.style.height = '0px';
+      if (endBadge) endBadge.classList.add('hidden');
+      if (spinner) spinner.classList.remove('hidden');
 
-      // Date filter
-      if (activeDateFilter) {
-        url += `&date=${encodeURIComponent(activeDateFilter)}`;
-      }
-
-      const camera = document.getElementById('filterCamera').value;
+      let url = `/api/v1/events?limit=${BATCH_SIZE}&offset=0`;
+      if (activeDateFilter) url += `&date=${encodeURIComponent(activeDateFilter)}`;
+      const camera = document.getElementById('filterCamera')?.value;
       if (camera) url += `&camera=${encodeURIComponent(camera)}`;
-
-      const cls = document.getElementById('filterClass').value;
+      const cls = document.getElementById('filterClass')?.value;
       if (cls) url += `&cls=${encodeURIComponent(cls)}`;
 
       try {
@@ -2446,27 +2454,173 @@
         if (!res.ok) throw new Error(`HTTP error ${res.status}`);
         const data = await res.json();
         allEvents = data.events || [];
+        totalEventsCount = (typeof data.total === 'number') ? data.total : allEvents.length;
 
-        document.getElementById('eventsBadgeCount').textContent = allEvents.length;
+        windowStartIndex = 0;
+        windowEndIndex = allEvents.length;
+
+        const badgeCount = document.getElementById('eventsBadgeCount');
+        if (badgeCount) badgeCount.textContent = totalEventsCount;
         const mobBadge = document.getElementById('mobEventsBadgeCount');
-        if (mobBadge) mobBadge.textContent = allEvents.length;
-        pageBadge.textContent = `Page ${currentPage + 1}`;
-        document.getElementById('btnPrevPage').disabled = (currentPage === 0);
-        document.getElementById('btnNextPage').disabled = (allEvents.length < limit);
+        if (mobBadge) mobBadge.textContent = totalEventsCount;
 
         if (allEvents.length === 0) {
           container.innerHTML = '';
           emptyState.classList.remove('hidden');
-          counterText.textContent = 'Showing 0 events';
+          updateEventsCounter();
           return;
         }
 
         emptyState.classList.add('hidden');
-        counterText.textContent = `Showing ${allEvents.length} event(s)`;
         renderEventCards(allEvents);
+        updateEventsCounter();
+
+        if (allEvents.length < BATCH_SIZE || allEvents.length >= totalEventsCount) {
+          if (endBadge) endBadge.classList.remove('hidden');
+        }
       } catch (err) {
         showToast('Failed to fetch events: ' + err.message, 'error');
+      } finally {
+        if (spinner) spinner.classList.add('hidden');
       }
+    }
+
+    function updateEventsCounter() {
+      const counterText = document.getElementById('eventsCounterText');
+      if (!counterText) return;
+
+      if (totalEventsCount === 0 || allEvents.length === 0) {
+        counterText.textContent = 'Showing 0 events';
+        return;
+      }
+
+      const start = windowStartIndex + 1;
+      const end = Math.min(windowEndIndex, totalEventsCount);
+      counterText.textContent = `Showing events ${start}–${end} of ${totalEventsCount}`;
+    }
+
+    async function autoloadNextBatch() {
+      if (isAutoloading) return;
+      if (totalEventsCount > 0 && windowEndIndex >= totalEventsCount && allEvents.length >= totalEventsCount) {
+        const endBadge = document.getElementById('eventsEndOfTimeline');
+        if (endBadge) endBadge.classList.remove('hidden');
+        const spinner = document.getElementById('eventsLoadingSpinner');
+        if (spinner) spinner.classList.add('hidden');
+        return;
+      }
+
+      isAutoloading = true;
+      const spinner = document.getElementById('eventsLoadingSpinner');
+      const endBadge = document.getElementById('eventsEndOfTimeline');
+      if (spinner) spinner.classList.remove('hidden');
+      if (endBadge) endBadge.classList.add('hidden');
+
+      try {
+        if (windowEndIndex < allEvents.length) {
+          const nextBatch = allEvents.slice(windowEndIndex, windowEndIndex + BATCH_SIZE);
+          appendCardsToDom(nextBatch);
+          updateEventsCounter();
+        } else {
+          const offset = allEvents.length;
+          let url = `/api/v1/events?limit=${BATCH_SIZE}&offset=${offset}`;
+          if (activeDateFilter) url += `&date=${encodeURIComponent(activeDateFilter)}`;
+          const camera = document.getElementById('filterCamera')?.value;
+          if (camera) url += `&camera=${encodeURIComponent(camera)}`;
+          const cls = document.getElementById('filterClass')?.value;
+          if (cls) url += `&cls=${encodeURIComponent(cls)}`;
+
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+          const data = await res.json();
+          const newItems = data.events || [];
+          if (typeof data.total === 'number') {
+            totalEventsCount = data.total;
+          }
+
+          if (newItems.length > 0) {
+            allEvents.push(...newItems);
+            appendCardsToDom(newItems);
+            updateEventsCounter();
+          }
+
+          if (newItems.length < BATCH_SIZE || allEvents.length >= totalEventsCount) {
+            if (endBadge) endBadge.classList.remove('hidden');
+          }
+        }
+      } catch (err) {
+        console.error('Error autoloading next batch:', err);
+      } finally {
+        if (spinner) spinner.classList.add('hidden');
+        isAutoloading = false;
+      }
+    }
+
+    async function autoloadPreviousBatch() {
+      if (isAutoloading || windowStartIndex <= 0) return;
+
+      isAutoloading = true;
+      try {
+        const restoreCount = Math.min(BATCH_SIZE, windowStartIndex);
+        const prevBatch = allEvents.slice(windowStartIndex - restoreCount, windowStartIndex);
+        if (prevBatch.length > 0) {
+          prependCardsToDom(prevBatch);
+          updateEventsCounter();
+        }
+      } catch (err) {
+        console.error('Error autoloading previous batch:', err);
+      } finally {
+        isAutoloading = false;
+      }
+    }
+
+    function scrollToTopAndResetWindow() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      if (windowStartIndex > 0 && allEvents.length > 0) {
+        topSpacerHeight = 0;
+        const topSpacer = document.getElementById('eventsTopSpacer');
+        if (topSpacer) topSpacer.style.height = '0px';
+
+        const initialSlice = allEvents.slice(0, Math.min(MAX_WINDOW_CARDS, allEvents.length));
+        windowStartIndex = 0;
+        windowEndIndex = initialSlice.length;
+
+        renderEventCards(initialSlice);
+        updateEventsCounter();
+      }
+    }
+
+    function initSlidingWindowObservers() {
+      const bottomSentinel = document.getElementById('eventsBottomSentinel');
+      const topSentinel = document.getElementById('eventsTopSentinel');
+
+      if (bottomSentinel) {
+        bottomObserver = new IntersectionObserver((entries) => {
+          if (entries[0].isIntersecting) {
+            autoloadNextBatch();
+          }
+        }, { rootMargin: '350px 0px' });
+        bottomObserver.observe(bottomSentinel);
+      }
+
+      if (topSentinel) {
+        topObserver = new IntersectionObserver((entries) => {
+          if (entries[0].isIntersecting && windowStartIndex > 0) {
+            autoloadPreviousBatch();
+          }
+        }, { rootMargin: '200px 0px' });
+        topObserver.observe(topSentinel);
+      }
+
+      window.addEventListener('scroll', () => {
+        const btn = document.getElementById('btnFloatingBackToTop');
+        if (btn) {
+          if (window.scrollY > 500) {
+            btn.classList.remove('hidden');
+          } else {
+            btn.classList.add('hidden');
+          }
+        }
+      }, { passive: true });
     }
 
     function getMaxClassConfidenceList(objects) {
@@ -2511,13 +2665,14 @@
       }
       allEvents = allEvents.filter(e => e.id !== eventId);
       selectedEventIds.delete(eventId);
+      if (totalEventsCount > 0) totalEventsCount--;
+      if (windowEndIndex > allEvents.length) windowEndIndex = allEvents.length;
       updateBatchToolbar();
       const badge = document.getElementById('eventsBadgeCount');
-      if (badge) badge.textContent = allEvents.length;
+      if (badge) badge.textContent = totalEventsCount;
       const mobBadge = document.getElementById('mobEventsBadgeCount');
-      if (mobBadge) mobBadge.textContent = allEvents.length;
-      const counterText = document.getElementById('eventsCounterText');
-      if (counterText) counterText.textContent = `Showing ${allEvents.length} event(s)`;
+      if (mobBadge) mobBadge.textContent = totalEventsCount;
+      updateEventsCounter();
 
       if (typeof currentModalEventId !== 'undefined' && currentModalEventId === eventId) {
         closeVideoModal();
@@ -2738,12 +2893,9 @@
       );
     }
 
-    function renderEventCards(events) {
-      const container = document.getElementById('eventsContainer');
+    function createCardHtml(event) {
       const canDelete = !authStatus || !authStatus.auth_enabled || Boolean(authStatus.is_admin);
-
-      container.innerHTML = events.map(event => {
-        const timeFormatted = formatEventTime(event.detected_at);
+      const timeFormatted = formatEventTime(event.detected_at);
         const dateFormatted = formatEventDate(event.detected_at);
         const classList = getMaxClassConfidenceList(event.objects);
         const hasDetections = classList.length > 0;
@@ -2838,7 +2990,75 @@
             </div>
           </div>
         `;
-      }).join('');
+    }
+
+    function renderEventCards(events) {
+      const container = document.getElementById('eventsContainer');
+      if (container) {
+        container.innerHTML = events.map(createCardHtml).join('');
+      }
+    }
+
+    function appendCardsToDom(newEvents) {
+      const container = document.getElementById('eventsContainer');
+      if (!container || !newEvents || newEvents.length === 0) return;
+
+      const html = newEvents.map(createCardHtml).join('');
+      container.insertAdjacentHTML('beforeend', html);
+      windowEndIndex += newEvents.length;
+
+      const domCount = windowEndIndex - windowStartIndex;
+      if (domCount > MAX_WINDOW_CARDS) {
+        const cardsToPrune = domCount - MAX_WINDOW_CARDS;
+        const children = Array.from(container.children);
+        if (children.length >= cardsToPrune) {
+          const firstRect = children[0].getBoundingClientRect();
+          const lastPrunedRect = children[cardsToPrune - 1].getBoundingClientRect();
+          const removedHeight = Math.max(0, (lastPrunedRect.bottom - firstRect.top) + 20);
+
+          for (let i = 0; i < cardsToPrune; i++) {
+            children[i].remove();
+          }
+
+          topSpacerHeight += removedHeight;
+          const spacer = document.getElementById('eventsTopSpacer');
+          if (spacer) spacer.style.height = `${topSpacerHeight}px`;
+
+          windowStartIndex += cardsToPrune;
+        }
+      }
+    }
+
+    function prependCardsToDom(restoredEvents) {
+      const container = document.getElementById('eventsContainer');
+      if (!container || !restoredEvents || restoredEvents.length === 0) return;
+
+      const html = restoredEvents.map(createCardHtml).join('');
+      container.insertAdjacentHTML('afterbegin', html);
+      windowStartIndex -= restoredEvents.length;
+
+      const children = Array.from(container.children);
+      const prependedCount = restoredEvents.length;
+      if (children.length >= prependedCount) {
+        const firstRect = children[0].getBoundingClientRect();
+        const lastPrependedRect = children[prependedCount - 1].getBoundingClientRect();
+        const restoredHeight = Math.max(0, (lastPrependedRect.bottom - firstRect.top) + 20);
+
+        topSpacerHeight = Math.max(0, topSpacerHeight - restoredHeight);
+        const spacer = document.getElementById('eventsTopSpacer');
+        if (spacer) spacer.style.height = `${topSpacerHeight}px`;
+
+        const domCount = windowEndIndex - windowStartIndex;
+        if (domCount > MAX_WINDOW_CARDS) {
+          const cardsToPrune = domCount - MAX_WINDOW_CARDS;
+          const currentChildren = Array.from(container.children);
+          for (let i = 0; i < cardsToPrune; i++) {
+            const lastChild = currentChildren[currentChildren.length - 1 - i];
+            if (lastChild) lastChild.remove();
+          }
+          windowEndIndex -= cardsToPrune;
+        }
+      }
     }
 
     function formatEventDate(isoStr) {
@@ -2917,8 +3137,8 @@
         return;
       }
 
-      const isFirst = (currentPage === 0 && currentIndex === 0);
-      const isLast = (document.getElementById('btnNextPage')?.disabled && currentIndex === allEvents.length - 1);
+      const isFirst = (currentIndex === 0);
+      const isLast = (currentIndex === allEvents.length - 1 && (totalEventsCount === 0 || allEvents.length >= totalEventsCount));
 
       prevBtn.disabled = isFirst;
       nextBtn.disabled = isLast;
@@ -2961,7 +3181,7 @@
         playSlideInAnimation(delta);
       };
 
-      // 1. Target is within current page
+      // 1. Target is within currently loaded allEvents
       if (targetIndex >= 0 && targetIndex < allEvents.length) {
         const targetEvent = allEvents[targetIndex];
         await performTransition(() => {
@@ -2970,38 +3190,43 @@
         return;
       }
 
-      // 2. Target requires previous page (newer videos)
+      // 2. Target is before the beginning
       if (targetIndex < 0) {
-        if (currentPage > 0) {
-          await performTransition(async () => {
-            currentPage--;
-            await fetchEvents();
-            if (allEvents.length > 0) {
-              const targetEvent = allEvents[allEvents.length - 1];
-              openVideoModal(targetEvent.id, currentModalMediaMode, false);
-            }
-          });
-        } else {
-          if (stage) {
-            stage.style.transition = 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.25s ease-out';
-            stage.style.transform = 'translateX(0)';
-            stage.style.opacity = '1';
-          }
-          showToast('Already at the newest clip', 'info');
+        if (stage) {
+          stage.style.transition = 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.25s ease-out';
+          stage.style.transform = 'translateX(0)';
+          stage.style.opacity = '1';
         }
+        showToast('Already at the newest clip', 'info');
         return;
       }
 
-      // 3. Target requires next page (older videos)
+      // 3. Target is beyond currently loaded allEvents -> fetch next batch if available
       if (targetIndex >= allEvents.length) {
-        const nextPageBtn = document.getElementById('btnNextPage');
-        if (nextPageBtn && !nextPageBtn.disabled) {
+        if (totalEventsCount === 0 || allEvents.length < totalEventsCount) {
           await performTransition(async () => {
-            currentPage++;
-            await fetchEvents();
-            if (allEvents.length > 0) {
-              const targetEvent = allEvents[0];
-              openVideoModal(targetEvent.id, currentModalMediaMode, false);
+            const offset = allEvents.length;
+            let url = `/api/v1/events?limit=${BATCH_SIZE}&offset=${offset}`;
+            if (activeDateFilter) url += `&date=${encodeURIComponent(activeDateFilter)}`;
+            const camera = document.getElementById('filterCamera')?.value;
+            if (camera) url += `&camera=${encodeURIComponent(camera)}`;
+            const cls = document.getElementById('filterClass')?.value;
+            if (cls) url += `&cls=${encodeURIComponent(cls)}`;
+
+            const res = await fetch(url);
+            if (res.ok) {
+              const data = await res.json();
+              const newItems = data.events || [];
+              if (typeof data.total === 'number') totalEventsCount = data.total;
+              if (newItems.length > 0) {
+                allEvents.push(...newItems);
+                appendCardsToDom(newItems);
+                updateEventsCounter();
+                if (targetIndex < allEvents.length) {
+                  openVideoModal(allEvents[targetIndex].id, currentModalMediaMode, false);
+                  return;
+                }
+              }
             }
           });
         } else {
@@ -3240,8 +3465,8 @@
 
         // Determine if at boundaries for rubber-band dampening
         const currentIndex = allEvents.findIndex(e => e.id === currentModalEventId);
-        const isAtStart = (currentPage === 0 && currentIndex === 0);
-        const isAtEnd = (document.getElementById('btnNextPage')?.disabled && currentIndex === allEvents.length - 1);
+        const isAtStart = (currentIndex === 0);
+        const isAtEnd = (currentIndex === allEvents.length - 1 && (totalEventsCount === 0 || allEvents.length >= totalEventsCount));
 
         let appliedX = diffX;
         if ((isAtStart && diffX > 0) || (isAtEnd && diffX < 0)) {
