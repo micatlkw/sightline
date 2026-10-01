@@ -465,9 +465,9 @@
         </div>
       </div>
 
-      <!-- Top Sentinel & Top Spacer for Sliding Window -->
-      <div id="eventsTopSentinel" class="h-1 w-full pointer-events-none opacity-0"></div>
+      <!-- Top Spacer & Top Sentinel for Sliding Window -->
       <div id="eventsTopSpacer" class="w-full transition-none" style="height: 0px;"></div>
+      <div id="eventsTopSentinel" class="h-4 w-full pointer-events-none opacity-0"></div>
 
       <!-- Events Grid Container (Strictly holds max ~30 cards) -->
       <div id="eventsContainer" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -504,7 +504,7 @@
         <div id="eventsCounterText" class="text-xs text-slate-400 font-mono">Showing 0 events</div>
         <div class="flex items-center gap-2">
           <button onclick="scrollToTopAndResetWindow()" class="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-xs text-slate-300 hover:text-white border border-slate-700/80 transition flex items-center gap-1.5 cursor-pointer">
-            <i class="fa-solid fa-arrow-up text-[10px]"></i> Top
+            <i class="fa-solid fa-arrow-up text-[10px]"></i> Back to top
           </button>
         </div>
       </div>
@@ -1153,8 +1153,9 @@
   </div>
 
   <!-- Floating Back to Top Button -->
-  <button id="btnFloatingBackToTop" onclick="scrollToTopAndResetWindow()" class="fixed bottom-6 right-6 z-40 hidden w-11 h-11 rounded-full bg-brand-600/90 hover:bg-brand-500 text-white shadow-2xl backdrop-blur-md transition-all transform hover:scale-110 active:scale-95 border border-brand-400/40 flex items-center justify-center cursor-pointer" title="Back to Top (Event #1)">
-    <i class="fa-solid fa-arrow-up text-sm"></i>
+  <button id="btnFloatingBackToTop" onclick="scrollToTopAndResetWindow()" class="fixed bottom-6 right-6 z-40 hidden items-center gap-2 px-4 py-2.5 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-2xl backdrop-blur-md transition-all duration-200 transform hover:scale-105 active:scale-95 border border-brand-400/40 cursor-pointer font-semibold text-xs tracking-wide shadow-brand-500/30" title="Back to Top (Event #1)">
+    <i class="fa-solid fa-arrow-up text-xs"></i>
+    <span>Back to top</span>
   </button>
 
   <!-- ── Toast Notification Container ──────────────────────────────────────── -->
@@ -1961,6 +1962,7 @@
 
     // Initialize Dashboard after checking authentication status
     document.addEventListener('DOMContentLoaded', async () => {
+      initSlidingWindowObservers();
       await checkAuthStatus();
     });
 
@@ -2575,11 +2577,11 @@
 
     function scrollToTopAndResetWindow() {
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      if (windowStartIndex > 0 && allEvents.length > 0) {
-        topSpacerHeight = 0;
-        const topSpacer = document.getElementById('eventsTopSpacer');
-        if (topSpacer) topSpacer.style.height = '0px';
+      topSpacerHeight = 0;
+      const topSpacer = document.getElementById('eventsTopSpacer');
+      if (topSpacer) topSpacer.style.height = '0px';
 
+      if (windowStartIndex > 0 && allEvents.length > 0) {
         const initialSlice = allEvents.slice(0, Math.min(MAX_WINDOW_CARDS, allEvents.length));
         windowStartIndex = 0;
         windowEndIndex = initialSlice.length;
@@ -2587,9 +2589,18 @@
         renderEventCards(initialSlice);
         updateEventsCounter();
       }
+
+      const btn = document.getElementById('btnFloatingBackToTop');
+      if (btn) {
+        btn.classList.add('hidden');
+        btn.style.display = 'none';
+      }
     }
 
     function initSlidingWindowObservers() {
+      if (window._slidingWindowObserversInitialized) return;
+      window._slidingWindowObserversInitialized = true;
+
       const bottomSentinel = document.getElementById('eventsBottomSentinel');
       const topSentinel = document.getElementById('eventsTopSentinel');
 
@@ -2598,7 +2609,7 @@
           if (entries[0].isIntersecting) {
             autoloadNextBatch();
           }
-        }, { rootMargin: '350px 0px' });
+        }, { rootMargin: '400px 0px' });
         bottomObserver.observe(bottomSentinel);
       }
 
@@ -2607,20 +2618,39 @@
           if (entries[0].isIntersecting && windowStartIndex > 0) {
             autoloadPreviousBatch();
           }
-        }, { rootMargin: '200px 0px' });
+        }, { rootMargin: '400px 0px' });
         topObserver.observe(topSentinel);
       }
 
-      window.addEventListener('scroll', () => {
+      function updateBackToTopAndScrollTriggers() {
+        const scrollY = window.pageYOffset || document.documentElement.scrollTop || window.scrollY || 0;
         const btn = document.getElementById('btnFloatingBackToTop');
         if (btn) {
-          if (window.scrollY > 500) {
+          if (scrollY > 250) {
             btn.classList.remove('hidden');
+            btn.style.display = 'flex';
           } else {
             btn.classList.add('hidden');
+            btn.style.display = 'none';
           }
         }
-      }, { passive: true });
+
+        // Secondary safety trigger when scrolling up:
+        // If user is scrolled up near the top of the events container and earlier cards exist in allEvents
+        if (windowStartIndex > 0 && !isAutoloading) {
+          const container = document.getElementById('eventsContainer');
+          if (container) {
+            const rect = container.getBoundingClientRect();
+            // If top of container is close to or in the viewport
+            if (rect.top > -350 && rect.top < (window.innerHeight || document.documentElement.clientHeight)) {
+              autoloadPreviousBatch();
+            }
+          }
+        }
+      }
+
+      window.addEventListener('scroll', updateBackToTopAndScrollTriggers, { passive: true });
+      updateBackToTopAndScrollTriggers();
     }
 
     function getMaxClassConfidenceList(objects) {
@@ -3010,14 +3040,14 @@
       const domCount = windowEndIndex - windowStartIndex;
       if (domCount > MAX_WINDOW_CARDS) {
         const cardsToPrune = domCount - MAX_WINDOW_CARDS;
-        const children = Array.from(container.children);
-        if (children.length >= cardsToPrune) {
-          const firstRect = children[0].getBoundingClientRect();
-          const lastPrunedRect = children[cardsToPrune - 1].getBoundingClientRect();
-          const removedHeight = Math.max(0, (lastPrunedRect.bottom - firstRect.top) + 20);
+        const children = container.children;
+        if (children.length > cardsToPrune) {
+          const firstCardRect = children[0].getBoundingClientRect();
+          const targetCardRect = children[cardsToPrune].getBoundingClientRect();
+          const removedHeight = Math.max(0, targetCardRect.top - firstCardRect.top);
 
           for (let i = 0; i < cardsToPrune; i++) {
-            children[i].remove();
+            children[0].remove();
           }
 
           topSpacerHeight += removedHeight;
@@ -3033,31 +3063,35 @@
       const container = document.getElementById('eventsContainer');
       if (!container || !restoredEvents || restoredEvents.length === 0) return;
 
+      const prependedCount = restoredEvents.length;
+      const prevFirstChild = container.firstElementChild;
+      const prevTop = prevFirstChild ? prevFirstChild.getBoundingClientRect().top : 0;
+
       const html = restoredEvents.map(createCardHtml).join('');
       container.insertAdjacentHTML('afterbegin', html);
-      windowStartIndex -= restoredEvents.length;
+      windowStartIndex -= prependedCount;
 
-      const children = Array.from(container.children);
-      const prependedCount = restoredEvents.length;
-      if (children.length >= prependedCount) {
-        const firstRect = children[0].getBoundingClientRect();
-        const lastPrependedRect = children[prependedCount - 1].getBoundingClientRect();
-        const restoredHeight = Math.max(0, (lastPrependedRect.bottom - firstRect.top) + 20);
+      const newTop = prevFirstChild ? prevFirstChild.getBoundingClientRect().top : 0;
+      const addedHeight = Math.max(0, newTop - prevTop);
 
-        topSpacerHeight = Math.max(0, topSpacerHeight - restoredHeight);
-        const spacer = document.getElementById('eventsTopSpacer');
-        if (spacer) spacer.style.height = `${topSpacerHeight}px`;
+      topSpacerHeight = Math.max(0, topSpacerHeight - addedHeight);
+      if (windowStartIndex <= 0) {
+        topSpacerHeight = 0;
+        windowStartIndex = 0;
+      }
+      const spacer = document.getElementById('eventsTopSpacer');
+      if (spacer) spacer.style.height = `${topSpacerHeight}px`;
 
-        const domCount = windowEndIndex - windowStartIndex;
-        if (domCount > MAX_WINDOW_CARDS) {
-          const cardsToPrune = domCount - MAX_WINDOW_CARDS;
-          const currentChildren = Array.from(container.children);
-          for (let i = 0; i < cardsToPrune; i++) {
-            const lastChild = currentChildren[currentChildren.length - 1 - i];
-            if (lastChild) lastChild.remove();
+      // Prune excess cards from bottom so DOM strictly never exceeds MAX_WINDOW_CARDS
+      const domCount = windowEndIndex - windowStartIndex;
+      if (domCount > MAX_WINDOW_CARDS) {
+        const cardsToPrune = domCount - MAX_WINDOW_CARDS;
+        for (let i = 0; i < cardsToPrune; i++) {
+          if (container.lastElementChild) {
+            container.lastElementChild.remove();
           }
-          windowEndIndex -= cardsToPrune;
         }
+        windowEndIndex -= cardsToPrune;
       }
     }
 
