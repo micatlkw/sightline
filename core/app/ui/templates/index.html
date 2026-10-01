@@ -1152,8 +1152,8 @@
     </div>
   </div>
 
-  <!-- Floating Back to Top Button -->
-  <button id="btnFloatingBackToTop" onclick="scrollToTopAndResetWindow()" class="fixed bottom-6 right-6 z-40 hidden items-center gap-2 px-4 py-2.5 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-2xl backdrop-blur-md transition-all duration-200 transform hover:scale-105 active:scale-95 border border-brand-400/40 cursor-pointer font-semibold text-xs tracking-wide shadow-brand-500/30" title="Back to Top (Event #1)">
+  <!-- Floating Back to Top Button (Smooth fade/slide transition, visible midway) -->
+  <button id="btnFloatingBackToTop" onclick="scrollToTopAndResetWindow()" style="bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)); right: 1.5rem;" class="fixed z-[90] flex items-center gap-2 px-4 py-2.5 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-2xl backdrop-blur-md transition-all duration-300 transform border border-brand-400/50 cursor-pointer font-semibold text-xs tracking-wide shadow-brand-500/40 opacity-0 translate-y-4 pointer-events-none hover:scale-105 active:scale-95" title="Back to Top (Event #1)">
     <i class="fa-solid fa-arrow-up text-xs"></i>
     <span>Back to top</span>
   </button>
@@ -1973,10 +1973,14 @@
       if (typeof closeMobileMenu === 'function') closeMobileMenu();
       document.querySelectorAll('[id^="targetClassesDrawer_"]').forEach(d => d.classList.add('hidden'));
       switchTab('events');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      scrollToTopAndResetWindow();
     }
 
     function switchTab(tabId) {
+      if (tabId === 'events' && activeTab === 'events') {
+        scrollToTopAndResetWindow();
+        return;
+      }
       activeTab = tabId;
       document.querySelectorAll('.tab-btn').forEach(b => {
         b.classList.remove('bg-brand-600', 'text-white', 'shadow');
@@ -2592,8 +2596,8 @@
 
       const btn = document.getElementById('btnFloatingBackToTop');
       if (btn) {
-        btn.classList.add('hidden');
-        btn.style.display = 'none';
+        btn.classList.remove('opacity-100', 'translate-y-0', 'pointer-events-auto');
+        btn.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
       }
     }
 
@@ -2626,12 +2630,13 @@
         const scrollY = window.pageYOffset || document.documentElement.scrollTop || window.scrollY || 0;
         const btn = document.getElementById('btnFloatingBackToTop');
         if (btn) {
-          if (scrollY > 250) {
-            btn.classList.remove('hidden');
-            btn.style.display = 'flex';
+          // Show prominently as soon as user scrolls down past filter bar (> 150px)
+          if (scrollY > 150) {
+            btn.classList.remove('opacity-0', 'translate-y-4', 'pointer-events-none');
+            btn.classList.add('opacity-100', 'translate-y-0', 'pointer-events-auto');
           } else {
-            btn.classList.add('hidden');
-            btn.style.display = 'none';
+            btn.classList.remove('opacity-100', 'translate-y-0', 'pointer-events-auto');
+            btn.classList.add('opacity-0', 'translate-y-4', 'pointer-events-none');
           }
         }
 
@@ -2650,6 +2655,7 @@
       }
 
       window.addEventListener('scroll', updateBackToTopAndScrollTriggers, { passive: true });
+      window.addEventListener('touchmove', updateBackToTopAndScrollTriggers, { passive: true });
       updateBackToTopAndScrollTriggers();
     }
 
