@@ -55,7 +55,7 @@ services:
       - PUID=${PUID:-1026}
       - PGID=${PGID:-100}
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
-      - TUNNEL_MODE=${TUNNEL_MODE:-}
+      - TUNNEL_MODE=${TUNNEL_MODE:-false}
 
 
 

@@ -8,7 +8,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 import yaml
@@ -350,6 +350,30 @@ class Settings(BaseSettings):
     webpush_ttl_seconds: int = 86400
 
     # ── Validators ─────────────────────────────────────────────────────────────
+    @field_validator(
+        "tunnel_mode",
+        "watch_use_polling",
+        "scan_on_startup",
+        "enable_api_docs",
+        "allow_lan_auth_bypass",
+        mode="before",
+    )
+    @classmethod
+    def _validate_bool_env(cls, v: Any, info: ValidationInfo) -> Any:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("", "none", "null"):
+                defaults = {
+                    "scan_on_startup": True,
+                    "allow_lan_auth_bypass": True,
+                }
+                return defaults.get(info.field_name, False)
+            if s in ("true", "1", "yes", "on"):
+                return True
+            if s in ("false", "0", "no", "off"):
+                return False
+        return v
+
     @field_validator("confidence_threshold", mode="before")
     @classmethod
     def _validate_global_confidence_threshold(cls, v: Any) -> float:
