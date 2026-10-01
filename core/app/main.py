@@ -273,9 +273,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     except Exception:
                         origin = None
 
+            from app.auth.google_sso import (
+                get_client_ip,
+                get_session_cookie_from_request,
+                is_allowed_ws_origin,
+                is_lan_client,
+            )
+            app_cfg = getattr(request.app.state, "settings", cfg)
+
             if origin:
-                from app.auth.google_sso import is_allowed_ws_origin
-                app_cfg = getattr(request.app.state, "settings", cfg)
                 if not is_allowed_ws_origin(origin, app_cfg):
                     client_ip = get_client_ip(request, app_cfg)
                     logger.warning(
@@ -285,7 +291,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         status_code=status.HTTP_403_FORBIDDEN,
                         content={"detail": "Cross-origin requests are forbidden from this origin"},
                     )
-        return await call_next(request)
+            else:
+                # If neither Origin nor Referer is provided, check if the request is carrying ambient cookie credentials
+                # over WAN. State-changing requests with session cookies must include a verified Origin/Referer to prevent CSRF.
+                has_cookie = bool(get_session_cookie_from_request(request))
+                has_bearer = bool(request.headers.get("authorization", "").lower().startswith("bearer "))
+                is_lan = is_lan_client(request, app_cfg)
+                if has_cookie and not has_bearer and not is_lan:
+                    client_ip = get_client_ip(request, app_cfg)
+                    logger.warning(
+                        f"[AUDIT] [CSRF_REJECTED] Rejected {request.method} request to {request.url.path} with session cookie but missing Origin/Referer header (ip: {client_ip})"
+                    )
+                    return JSONResponse(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        content={"detail": "Missing required Origin or Referer header for cookie-authenticated request"},
+                    )
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        return response
 
     # Restrict CORS to configured domain, standard local/LAN origins, and mobile webviews
     cors_origins = [

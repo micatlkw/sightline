@@ -1612,7 +1612,10 @@
 
         // Avatar logic
         if (user.picture) {
-          const imgHtml = `<img src="${escapeHtml(user.picture)}" alt="${escapeHtml(displayName)}" class="w-full h-full object-cover rounded-lg" onerror="this.onerror=null;this.parentElement.innerHTML='<span class=\\'font-bold text-xs\\'>${escapeHtml((displayName || 'U')[0].toUpperCase())}</span>'" />`;
+          const safePic = escapeHtml(user.picture);
+          const safeName = escapeHtml(displayName);
+          const initial = escapeHtml((displayName || 'U')[0].toUpperCase());
+          const imgHtml = `<img src="${safePic}" alt="${safeName}" class="w-full h-full object-cover rounded-lg" onerror="this.onerror=null;this.parentElement.textContent='${initial}';" />`;
           if (userAvatarEl) userAvatarEl.innerHTML = imgHtml;
           if (mobUserAvatar) mobUserAvatar.innerHTML = imgHtml;
         } else {
@@ -3977,14 +3980,14 @@
               ${isCurrent ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/20 text-brand-400 font-semibold border border-brand-500/30 shrink-0">You</span>' : ''}
             </div>
             <div class="flex items-center gap-2 shrink-0">
-              <button type="button" onclick="toggleUserRole('${escapeHtml(email)}')" class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${isAdmin ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/30' : 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'} ${!isLanConnection && isCurrent ? 'opacity-50 cursor-not-allowed' : ''}" ${!isLanConnection && isCurrent ? 'disabled title="Cannot modify your own administrator role over WAN to prevent lockout"' : (isCurrent && isAdmin ? 'title="Cannot demote your own account while signed in"' : 'title="Click to toggle between Admin and Viewer"')}>
+              <button type="button" data-email="${escapeHtml(email)}" onclick="toggleUserRole(this.dataset.email)" class="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${isAdmin ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/30' : 'bg-sky-500/20 text-sky-300 border border-sky-500/40 hover:bg-sky-500/30'} ${!isLanConnection && isCurrent ? 'opacity-50 cursor-not-allowed' : ''}" ${!isLanConnection && isCurrent ? 'disabled title="Cannot modify your own administrator role over WAN to prevent lockout"' : (isCurrent && isAdmin ? 'title="Cannot demote your own account while signed in"' : 'title="Click to toggle between Admin and Viewer"')}>
                 <i class="fa-solid ${isAdmin ? 'fa-shield-halved text-purple-400' : 'fa-eye text-sky-400'}"></i>
                 <span>${isAdmin ? 'Admin' : 'Viewer'}</span>
               </button>
-              <button type="button" onclick="revokeUserSessions('${escapeHtml(email)}')" class="p-1.5 text-slate-400 hover:text-amber-400 transition" title="Revoke all active sessions on all devices for ${escapeHtml(email)}">
+              <button type="button" data-email="${escapeHtml(email)}" onclick="revokeUserSessions(this.dataset.email)" class="p-1.5 text-slate-400 hover:text-amber-400 transition" title="Revoke all active sessions on all devices for ${escapeHtml(email)}">
                 <i class="fa-solid fa-key"></i>
               </button>
-              <button type="button" onclick="removeUserRow('${escapeHtml(email)}')" class="p-1.5 text-slate-500 hover:text-rose-400 transition ${isCurrent ? 'opacity-30 cursor-not-allowed' : ''}" ${isCurrent ? 'disabled title="Cannot remove your own account"' : 'title="Remove user"'}>
+              <button type="button" data-email="${escapeHtml(email)}" onclick="removeUserRow(this.dataset.email)" class="p-1.5 text-slate-500 hover:text-rose-400 transition ${isCurrent ? 'opacity-30 cursor-not-allowed' : ''}" ${isCurrent ? 'disabled title="Cannot remove your own account"' : 'title="Remove user"'}>
                 <i class="fa-solid fa-trash-can"></i>
               </button>
             </div>
@@ -4457,7 +4460,7 @@
             <span class="leading-none text-sm">${emoji}</span>
             <span>${escapeHtml(cls)}</span>
             ${confBadge}
-            <button type="button" onclick="removeTargetClassItem('global', '${escapeHtml(cls)}')" class="hover:text-white text-brand-400/80 transition text-[10px] cursor-pointer" title="Remove ${escapeHtml(cls)}">
+            <button type="button" data-cls="${escapeHtml(cls)}" onclick="removeTargetClassItem('global', this.dataset.cls)" class="hover:text-white text-brand-400/80 transition text-[10px] cursor-pointer" title="Remove ${escapeHtml(cls)}">
               <i class="fa-solid fa-xmark"></i>
             </button>
           </span>
@@ -4488,7 +4491,7 @@
               <span class="leading-none text-xs">${emoji}</span>
               <span>${escapeHtml(cls)}</span>
               ${confBadge}
-              <button type="button" onclick="event.stopPropagation(); removeTargetClassItem(${idx}, '${escapeHtml(cls)}')" class="hover:text-white text-indigo-400/80 transition text-[9px] cursor-pointer" title="Remove ${escapeHtml(cls)}">
+              <button type="button" data-idx="${idx}" data-cls="${escapeHtml(cls)}" onclick="event.stopPropagation(); removeTargetClassItem(Number(this.dataset.idx), this.dataset.cls)" class="hover:text-white text-indigo-400/80 transition text-[9px] cursor-pointer" title="Remove ${escapeHtml(cls)}">
                 <i class="fa-solid fa-xmark"></i>
               </button>
             </span>
@@ -4702,7 +4705,7 @@
 
           return `
             <div class="flex items-center justify-between px-2 py-1.5 rounded-lg text-left transition border ${isChecked ? 'bg-indigo-950/40 border-indigo-500/50' : 'bg-slate-900 hover:bg-slate-800 border-slate-800'}">
-              <button type="button" onclick="event.stopPropagation(); toggleTargetClassItem(${ctxArg}, '${escapeHtml(item)}')" class="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer text-left bg-transparent border-none p-0 text-slate-200 hover:text-white">
+              <button type="button" data-ctx="${ctx}" data-item="${escapeHtml(item)}" onclick="event.stopPropagation(); toggleTargetClassItem(this.dataset.ctx === 'global' ? 'global' : Number(this.dataset.ctx), this.dataset.item)" class="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer text-left bg-transparent border-none p-0 text-slate-200 hover:text-white">
                 <span class="text-sm shrink-0 leading-none">${emoji}</span>
                 <span class="truncate text-xs font-medium text-slate-200" style="font-size: 11px;">${escapeHtml(item)}</span>
               </button>
@@ -4712,13 +4715,14 @@
                     placeholder="${inheritedBasePct}"
                     value="${confDisplay}"
                     title="Confidence % for ${escapeHtml(item)} (default: ${inheritedBasePct}%)"
-                    oninput="updateTargetClassConfidence(${ctxArg}, '${escapeHtml(itemKey)}', this.value); this.style.borderColor = this.value.trim() ? '#818cf8' : '#475569';"
+                    data-ctx="${ctx}" data-key="${escapeHtml(itemKey)}"
+                    oninput="updateTargetClassConfidence(this.dataset.ctx === 'global' ? 'global' : Number(this.dataset.ctx), this.dataset.key, this.value); this.style.borderColor = this.value.trim() ? '#818cf8' : '#475569';"
                     onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
                     style="width: 38px; min-width: 38px; font-size: 11px; padding: 1px 2px; text-align: center; color: #ffffff; background-color: #020617; border: 1px solid ${hasOverride ? '#818cf8' : '#475569'}; border-radius: 4px;"
                     class="font-mono focus:outline-none">
                   <span class="text-slate-400 font-mono shrink-0" style="font-size: 10px;">%</span>
                 ` : ''}
-                <button type="button" onclick="event.stopPropagation(); toggleTargetClassItem(${ctxArg}, '${escapeHtml(item)}')" class="p-0.5 cursor-pointer text-slate-400 hover:text-white bg-transparent border-none">
+                <button type="button" data-ctx="${ctx}" data-item="${escapeHtml(item)}" onclick="event.stopPropagation(); toggleTargetClassItem(this.dataset.ctx === 'global' ? 'global' : Number(this.dataset.ctx), this.dataset.item)" class="p-0.5 cursor-pointer text-slate-400 hover:text-white bg-transparent border-none">
                   ${isChecked 
                     ? '<i class="fa-solid fa-check text-indigo-400 text-xs shrink-0"></i>' 
                     : '<span class="inline-block w-2.5 h-2.5 rounded-sm border border-slate-700 shrink-0"></span>'}
@@ -4732,7 +4736,7 @@
         return `
           <div class="border border-slate-800/80 rounded-xl bg-slate-900/40 overflow-hidden">
             <!-- Collapsible Category Header -->
-            <div onclick="toggleCategoryCollapse(${ctxArg}, '${escapeHtml(cat.name)}', event)" class="flex items-center justify-between px-3 py-2 bg-slate-900/70 hover:bg-slate-800/70 cursor-pointer select-none transition">
+            <div data-ctx="${ctx}" data-cat="${escapeHtml(cat.name)}" onclick="toggleCategoryCollapse(this.dataset.ctx === 'global' ? 'global' : Number(this.dataset.ctx), this.dataset.cat, event)" class="flex items-center justify-between px-3 py-2 bg-slate-900/70 hover:bg-slate-800/70 cursor-pointer select-none transition">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="text-xs leading-none">${cat.emoji}</span>
                 <span class="text-[11px] font-bold text-slate-300 uppercase tracking-wider truncate">${escapeHtml(cat.name)}</span>

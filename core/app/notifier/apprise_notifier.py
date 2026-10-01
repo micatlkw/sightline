@@ -15,10 +15,24 @@ logger = logging.getLogger(__name__)
 
 
 def is_allowed_apprise_scheme(url: str) -> bool:
-    """Verifies that an Apprise URL uses an authorized remote notification protocol."""
+    """Verifies that an Apprise URL uses an authorized remote notification protocol and does not target metadata."""
     try:
-        scheme = urllib.parse.urlparse(url.strip()).scheme.lower()
-        return bool(scheme and scheme in ALLOWED_APPRISE_SCHEMES)
+        parsed = urllib.parse.urlparse(url.strip())
+        scheme = parsed.scheme.lower()
+        if not scheme or scheme not in ALLOWED_APPRISE_SCHEMES:
+            return False
+        host = (parsed.hostname or "").strip().lower()
+        if host:
+            if host in ("169.254.169.254", "metadata.google.internal", "metadata.internal"):
+                return False
+            try:
+                import ipaddress
+                ip = ipaddress.ip_address(host.strip("[]"))
+                if ip.is_link_local:
+                    return False
+            except ValueError:
+                pass
+        return True
     except Exception:
         return False
 

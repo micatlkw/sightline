@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -511,10 +512,11 @@ class Pipeline:
             self._incoming_dir,
             custom_mapping=self._settings.get_camera_mapping(),
         )
+        safe_camera = re.sub(r'[\r\n/\\;`]|(\.\.)', '_', resolved_camera).strip('_ ') or "camera"
         date_str = extract_date_str(clip_path)
         suffix_str = format_detection_suffix(detections)
         dest_filename = f"{clip_path.stem}{suffix_str}{clip_path.suffix}"
-        target_dir = self._processed_dir / date_str / resolved_camera
+        target_dir = self._processed_dir / date_str / safe_camera
         dest_path = self._move_clip(clip_path, target_dir, dest_filename)
         return dest_path, resolved_camera
 
@@ -524,9 +526,10 @@ class Pipeline:
             self._incoming_dir,
             custom_mapping=self._settings.get_camera_mapping(),
         )
+        safe_camera = re.sub(r'[\r\n/\\;`]|(\.\.)', '_', resolved_camera).strip('_ ') or "camera"
         date_str = extract_date_str(clip_path)
         dest_filename = clip_path.name
-        target_dir = self._processed_dir / "corrupt" / date_str / resolved_camera
+        target_dir = self._processed_dir / "corrupt" / date_str / safe_camera
         dest_path = self._move_clip(clip_path, target_dir, dest_filename)
         return dest_path, resolved_camera
 

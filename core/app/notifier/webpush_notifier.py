@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from app.auth.google_sso import get_session_secret
+from app.config import settings
 from app.core.helpers import format_detected_objects_summary, format_local_datetime
 from app.database import Database
 from app.models.event import EventRecord
@@ -76,7 +77,8 @@ class WebPushNotifier(BaseNotifier):
         # Generate pre-signed thumbnail URL so the notification animated GIF loads without session cookies
         image_url = None
         if event.id:
-            session_secret = get_session_secret(self._settings) if self._settings else "sightline-secret-key"
+            app_settings = self._settings or settings
+            session_secret = get_session_secret(app_settings)
             sig, exp = sign_thumbnail_token(event.id, str(session_secret), ttl_seconds=900)
             image_url = f"/api/v1/events/{event.id}/thumbnail?sig={sig}&exp={exp}"
 
@@ -132,7 +134,8 @@ class WebPushNotifier(BaseNotifier):
             latest_events = await self._db.get_events(limit=1)
             if latest_events and latest_events[0].id:
                 latest_ev = latest_events[0]
-                session_secret = get_session_secret(self._settings) if self._settings else "sightline-secret-key"
+                app_settings = self._settings or settings
+                session_secret = get_session_secret(app_settings)
                 sig, exp = sign_thumbnail_token(latest_ev.id, str(session_secret), ttl_seconds=900)
                 test_image_url = f"/api/v1/events/{latest_ev.id}/thumbnail?sig={sig}&exp={exp}"
         except Exception as e:

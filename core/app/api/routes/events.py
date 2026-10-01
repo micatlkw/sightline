@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.utils.range_stream import range_stream_response
 from app.auth.google_sso import User, get_current_user, get_session_secret, is_admin_user, is_lan_client
@@ -36,7 +36,7 @@ def sanitize_disposition_filename(filename: str) -> str:
 def is_safe_media_path(p: Path, settings) -> bool:
     """Verifies that resolved path is strictly contained within designated media directories."""
     if not settings:
-        return True
+        return False
     allowed_roots: list[Path] = []
     for attr in ("thumbnails_dir", "processed_dir", "incoming_dir"):
         val = getattr(settings, attr, None)
@@ -46,7 +46,7 @@ def is_safe_media_path(p: Path, settings) -> bool:
             except Exception:
                 pass
     if not allowed_roots:
-        return True
+        return False
     try:
         resolved = p.resolve()
         return any(resolved.is_relative_to(root) for root in allowed_roots)
@@ -132,7 +132,9 @@ def find_event_thumbnail_path(event, settings) -> Path | None:
         root = Path(settings.thumbnails_dir)
         if root.is_dir():
             for name in candidate_names:
-                stem = Path(name).stem
+                stem = re.sub(r'[*?\[\]]', '', Path(name).stem)
+                if not stem or len(stem) < 2:
+                    continue
                 if date_str and (root / date_str).is_dir():
                     matches = list((root / date_str).glob(f"**/{stem}*.gif"))
                     if matches:
@@ -216,10 +218,12 @@ def find_event_clip_path(event, settings) -> Path | None:
     # Glob fallback
     if search_roots and search_roots[0].is_dir():
         root = search_roots[0]
-        stem = Path(clip_filename).stem.split("-")[0]
-        matches = list(root.glob(f"**/{stem}*.mp4"))
-        if matches:
-            return matches[0]
+        raw_stem = Path(clip_filename).stem.split("-")[0]
+        stem = re.sub(r'[*?\[\]]', '', raw_stem)
+        if stem and len(stem) >= 2:
+            matches = list(root.glob(f"**/{stem}*.mp4"))
+            if matches:
+                return matches[0]
 
     return None
 
@@ -236,6 +240,11 @@ async def list_events(
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    if camera and re.search(r"[\r\n\x00-\x1f\"'`]", camera):
+        raise HTTPException(status_code=400, detail="Invalid characters in camera parameter")
+    if cls and re.search(r"[\r\n\x00-\x1f\"'`]", cls):
+        raise HTTPException(status_code=400, detail="Invalid characters in cls parameter")
+
     db: Database = request.app.state.db
     events = await db.get_events(
         camera=camera,
@@ -361,8 +370,8 @@ async def get_thumbnail(
     sig: str | None = Query(None, description="HMAC signature for signed Web Push thumbnail access"),
     exp: int | None = Query(None, description="Expiration timestamp for signed Web Push thumbnail access"),
 ) -> FileResponse:
-    settings = getattr(request.app.state, "settings", None)
-    session_secret = get_session_secret(settings) if settings else "sightline-secret-key"
+    app_settings = getattr(request.app.state, "settings", None) or settings
+    session_secret = get_session_secret(app_settings)
 
     # 1. Allow access if valid signed token is provided (for background lock-screen push notifications)
     if sig and exp:
@@ -377,8 +386,8 @@ async def get_thumbnail(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    thumb_path = find_event_thumbnail_path(event, settings)
-    if not thumb_path or not thumb_path.is_file() or not is_safe_media_path(thumb_path, settings):
+    thumb_path = find_event_thumbnail_path(event, app_settings)
+    if not thumb_path or not thumb_path.is_file() or not is_safe_media_path(thumb_path, app_settings):
         raise HTTPException(status_code=404, detail="No thumbnail found for this event")
 
     # Update database record if resolved to a new path
@@ -413,13 +422,13 @@ async def get_video(
     current_user: User = Depends(get_current_user),
 ) -> Response:
     db: Database = request.app.state.db
-    settings = getattr(request.app.state, "settings", None)
+    app_settings = getattr(request.app.state, "settings", None) or settings
     event = await db.get_event(event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    clip_path = find_event_clip_path(event, settings)
-    if not clip_path or not clip_path.is_file() or not is_safe_media_path(clip_path, settings):
+    clip_path = find_event_clip_path(event, app_settings)
+    if not clip_path or not clip_path.is_file() or not is_safe_media_path(clip_path, app_settings):
         raise HTTPException(status_code=404, detail=f"Clip file not found: {event.clip_path}")
 
     # Update database record if resolved to a new path
@@ -444,7 +453,7 @@ async def get_video(
 
 
 class BatchDeleteRequest(BaseModel):
-    event_ids: list[int]
+    event_ids: list[int] = Field(..., min_length=1, max_length=100)
 
 
 def delete_event_physical_files(event, settings: Settings | None) -> list[str]:
@@ -510,8 +519,12 @@ def delete_event_physical_files(event, settings: Settings | None) -> list[str]:
             for stem in stems_to_check:
                 if not stem or len(stem) < 3:
                     continue
-                # Match stem*.gif and stem*.jp*g anywhere under thumbnails_dir
-                for matched in t_dir.glob(f"**/{stem}*"):
+                # Sanitize stem by stripping glob metacharacters (*, ?, [, ])
+                clean_stem = re.sub(r'[*?\[\]]', '', stem)
+                if not clean_stem or len(clean_stem) < 3:
+                    continue
+                # Match clean_stem*.gif and clean_stem*.jp*g anywhere under thumbnails_dir
+                for matched in t_dir.glob(f"**/{clean_stem}*"):
                     if matched.is_file() and is_safe_media_path(matched, settings) and str(matched) not in unlinked:
                         try:
                             matched.unlink(missing_ok=True)

@@ -494,6 +494,9 @@ def get_mp4_duration(filepath: Path | str) -> float:
                 elif size == 0:
                     size = filesize - pos
 
+                if size < 8:
+                    break
+
                 if tag == b"moov":
                     moov_data = f.read(min(size - 8, 4096))
                     mvhd_idx = moov_data.find(b"mvhd")
