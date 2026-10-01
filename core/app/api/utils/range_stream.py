@@ -34,6 +34,13 @@ def range_stream_response(file_path: Path, request: Request) -> Response:
         start_str = range_parts[0].strip()
         end_str = range_parts[1].strip() if len(range_parts) > 1 else ""
 
+        if len(start_str) > 18 or len(end_str) > 18:
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+
         if start_str and end_str:
             start = int(start_str)
             end = int(end_str)
@@ -47,7 +54,7 @@ def range_stream_response(file_path: Path, request: Request) -> Response:
             start = 0
             end = file_size - 1
 
-        if start >= file_size or end >= file_size or start > end:
+        if start < 0 or end < 0 or start >= file_size or end >= file_size or start > end:
             raise HTTPException(
                 status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
                 detail="Requested range not satisfiable",

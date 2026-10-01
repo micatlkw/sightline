@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -457,8 +458,9 @@ class Database:
                 pass  # Do not filter by detections
             else:
                 # JSON text search — good enough for moderate event volumes
+                clean_cls = re.sub(r'[%_"\\]', '', cls).strip()
                 query += ' AND objects LIKE ?'
-                params.append(f'%"class": "{cls}"%')
+                params.append(f'%"class": "{clean_cls}"%')
         else:
             # Default: show events with qualifying detections
             query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
@@ -509,8 +511,9 @@ class Database:
             elif cls.lower() == "all_including_none":
                 pass
             else:
+                clean_cls = re.sub(r'[%_"\\]', '', cls).strip()
                 query += ' AND objects LIKE ?'
-                params.append(f'%"class": "{cls}"%')
+                params.append(f'%"class": "{clean_cls}"%')
         else:
             query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
         if date:
@@ -912,12 +915,16 @@ class Database:
         )
         await self._conn.commit()
 
-    async def remove_web_push_subscription(self, endpoint: str) -> bool:
-        """Removes a Web Push subscription by its unique endpoint."""
-        async with self._conn.execute(
-            "DELETE FROM web_push_subscriptions WHERE endpoint = ?",
-            (endpoint.strip(),),
-        ) as cur:
+    async def remove_web_push_subscription(self, endpoint: str, user_email: str | None = None) -> bool:
+        """Removes a Web Push subscription by its unique endpoint, optionally scoped to user_email."""
+        if user_email:
+            query = "DELETE FROM web_push_subscriptions WHERE endpoint = ? AND user_email = ?"
+            params = (endpoint.strip(), user_email.strip().lower())
+        else:
+            query = "DELETE FROM web_push_subscriptions WHERE endpoint = ?"
+            params = (endpoint.strip(),)
+
+        async with self._conn.execute(query, params) as cur:
             removed = cur.rowcount > 0
         await self._conn.commit()
         return removed

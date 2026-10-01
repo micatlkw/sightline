@@ -46,6 +46,17 @@ async def process_clip(
     body: ProcessClipRequest,
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    settings = getattr(request.app.state, "settings", None)
+    is_lan = is_lan_client(request, settings)
+
+    # Over WAN, only administrators can manually enqueue clips for processing
+    if not is_lan and not is_admin_user(current_user, settings):
+        logger.warning(f"[AUDIT] [AUTH_DENIED] Non-admin user {current_user.email} denied manual clip processing over WAN")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to manually enqueue clips over WAN",
+        )
+
     clip_path = Path(body.path)
     incoming_dir = Path(request.app.state.settings.incoming_dir).resolve()
     try:
@@ -65,6 +76,7 @@ async def process_clip(
 
     pipeline: Pipeline = request.app.state.pipeline
     await pipeline.enqueue(resolved_path)
+    logger.info(f"[AUDIT] [ADMIN_ACTION] User {current_user.email} manually enqueued clip: {resolved_path.name}")
 
     return {"status": "queued", "path": str(resolved_path)}
 

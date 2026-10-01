@@ -428,6 +428,17 @@ class Settings(BaseSettings):
                     f"Notification scheme '{scheme}' is not permitted (must be one of: "
                     f"{', '.join(sorted(ALLOWED_APPRISE_SCHEMES))})"
                 )
+            host = (parsed.hostname or "").strip().lower()
+            if host:
+                if host in ("169.254.169.254", "metadata.google.internal", "metadata.internal"):
+                    raise ValueError(f"Targeting cloud metadata endpoints is forbidden: {url[:50]}")
+                try:
+                    import ipaddress
+                    ip = ipaddress.ip_address(host.strip("[]"))
+                    if ip.is_link_local:
+                        raise ValueError(f"Targeting link-local address is forbidden: {url[:50]}")
+                except ValueError:
+                    pass
             cleaned.append(url)
         return cleaned
 

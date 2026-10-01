@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.auth.google_sso import User, get_current_user
+from app.auth.google_sso import User, get_current_user, is_admin_user, is_lan_client
 from app.database import Database
 from app.notifier.webpush import is_valid_push_endpoint
 
@@ -93,8 +93,14 @@ async def remove_subscription(
     request: Request,
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
+    cfg = getattr(request.app.state, "settings", None)
+    is_lan = is_lan_client(request, cfg)
+    is_admin = is_admin_user(current_user, cfg)
+
+    # Scoped to current user unless admin or local LAN
+    target_user_email = None if (is_lan or is_admin) else current_user.email
     db: Database = request.app.state.db
-    removed = await db.remove_web_push_subscription(payload.endpoint)
+    removed = await db.remove_web_push_subscription(payload.endpoint, user_email=target_user_email)
     logger.info(f"[notifications] unregistered Web Push subscription for {current_user.email} (removed={removed})")
     return {"success": True, "removed": removed}
 
@@ -141,14 +147,23 @@ async def get_notification_status(
     request: Request,
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
+    cfg = getattr(request.app.state, "settings", None)
+    is_lan = is_lan_client(request, cfg)
+    is_admin = is_admin_user(current_user, cfg)
+
     db: Database = request.app.state.db
-    all_subs = await db.get_web_push_subscriptions()
-    user_subs = [s for s in all_subs if s.get("user_email", "").lower() == current_user.email.lower()]
+    user_subs = await db.get_web_push_subscriptions(user_email=current_user.email)
     notifier = getattr(request.app.state, "webpush_notifier", None)
     has_keys = bool(notifier and notifier.public_key)
+
+    total_count = len(user_subs)
+    if is_lan or is_admin:
+        all_subs = await db.get_web_push_subscriptions()
+        total_count = len(all_subs)
+
     return {
         "configured": has_keys,
-        "total_active_subscriptions": len(all_subs),
-        "total_subscriptions": len(all_subs),
+        "total_active_subscriptions": total_count,
+        "total_subscriptions": total_count,
         "user_subscriptions_count": len(user_subs),
     }
