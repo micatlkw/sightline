@@ -41,8 +41,26 @@ htmlcov/
 !*.env.example
 *.pem
 *.key
+*.crt
+*.cer
+*.p12
+*.pfx
 *serviceAccountKey*.json
 *firebase_credentials*.json
+.session_secret
+vapid_keys.json
+
+# Local Configuration & Credentials
+settings.yaml
+settings.yml
+settings.json
+!settings.yaml.example
+!settings.json.example
+cameras_name.json
+Caddyfile
+caddy_data/
+caddy_config/
+cloudflared/
 
 # Sightline Runtime Data & SQLite
 sightline-data/
