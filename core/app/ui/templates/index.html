@@ -66,7 +66,7 @@
     }
     .filter-dropdowns-group {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 0.5rem;
       width: 100%;
     }
@@ -88,11 +88,12 @@
         gap: 0.75rem;
       }
       .filter-date-col {
-        flex: 5 1 0%;
+        flex: 4 1 0%;
       }
       .filter-dropdowns-group {
         flex: 6 1 0%;
         gap: 0.75rem;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .filter-label {
         display: block;
@@ -461,6 +462,16 @@
                 <option value="motorcycle">Motorcycle</option>
               </select>
             </div>
+
+            <!-- Confidence Selector -->
+            <div>
+              <label for="filterConfidence" class="filter-label text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">Confidence</label>
+              <select id="filterConfidence" aria-label="Filter by Confidence" onchange="applyFilters()" class="w-full h-9 bg-slate-900 border border-slate-700 rounded-xl px-2.5 sm:px-3 text-xs text-slate-200 focus:outline-none focus:border-brand-500 truncate cursor-pointer">
+                <option value="confirmed" selected>Confirmed Only</option>
+                <option value="all">All Confidence</option>
+                <option value="low">Low Confidence Only</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -652,7 +663,7 @@
             <p class="text-xs text-slate-400 mt-0.5">Default computer vision parameters applied to all cameras unless individually overridden.</p>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
             <div class="bg-slate-900/70 border border-slate-800/80 rounded-xl p-4 space-y-2">
               <div class="flex items-center justify-between">
                 <label class="block text-xs font-semibold text-white">YOLO Model</label>
@@ -682,6 +693,17 @@
               </div>
               <input type="range" id="inpGlobalConf" min="10" max="95" step="1" oninput="document.getElementById('valGlobalConf').textContent = this.value + '%'" class="w-full accent-brand-500 mt-2">
               <p class="text-[11px] text-slate-500">Minimum confidence score for detections</p>
+            </div>
+
+            <div class="bg-slate-900/70 border border-slate-800/80 rounded-xl p-4 space-y-2">
+              <div class="flex items-center justify-between">
+                <label class="block text-xs font-semibold text-white">
+                  Low-Confidence Floor: <span id="valGlobalLowConf" class="text-amber-400 font-mono font-bold">15%</span>
+                </label>
+                <i class="fa-solid fa-triangle-exclamation text-slate-500 text-xs"></i>
+              </div>
+              <input type="range" id="inpGlobalLowConf" min="5" max="50" step="1" oninput="document.getElementById('valGlobalLowConf').textContent = this.value + '%'" class="w-full accent-amber-500 mt-2 cursor-pointer">
+              <p class="text-[11px] text-slate-500">Floor threshold for classifying low-confidence detections</p>
             </div>
 
             <div class="bg-slate-900/70 border border-slate-800/80 rounded-xl p-4 space-y-2">
@@ -1217,7 +1239,7 @@
     if ('caches' in window) {
       caches.keys().then(keys => {
         keys.forEach(k => {
-          if (k !== 'sightline-v7') caches.delete(k);
+          caches.delete(k);
         });
       });
     }
@@ -1965,7 +1987,6 @@
 
     // Initialize Dashboard after checking authentication status
     document.addEventListener('DOMContentLoaded', async () => {
-      initSlidingWindowObservers();
       await checkAuthStatus();
     });
 
@@ -2414,8 +2435,12 @@
     function resetFilters() {
       activeDateFilter = '';
       updateCalendarTriggerText();
-      document.getElementById('filterCamera').value = '';
-      document.getElementById('filterClass').value = '';
+      const filterCamera = document.getElementById('filterCamera');
+      if (filterCamera) filterCamera.value = '';
+      const filterClass = document.getElementById('filterClass');
+      if (filterClass) filterClass.value = '';
+      const filterConfidence = document.getElementById('filterConfidence');
+      if (filterConfidence) filterConfidence.value = 'confirmed';
       updateDatePresetButtons('');
       fetchEvents();
     }
@@ -2457,6 +2482,8 @@
       if (camera) url += `&camera=${encodeURIComponent(camera)}`;
       const cls = document.getElementById('filterClass')?.value;
       if (cls) url += `&cls=${encodeURIComponent(cls)}`;
+      const confidence = document.getElementById('filterConfidence')?.value || 'confirmed';
+      if (confidence && confidence !== 'all') url += `&confidence=${encodeURIComponent(confidence)}`;
 
       try {
         const res = await fetch(url);
@@ -2509,7 +2536,7 @@
     }
 
     async function autoloadNextBatch() {
-      if (isAutoloading) return;
+      if (isAutoloading || allEvents.length === 0) return;
       if (totalEventsCount > 0 && windowEndIndex >= totalEventsCount && allEvents.length >= totalEventsCount) {
         const endBadge = document.getElementById('eventsEndOfTimeline');
         if (endBadge) endBadge.classList.remove('hidden');
@@ -2537,6 +2564,8 @@
           if (camera) url += `&camera=${encodeURIComponent(camera)}`;
           const cls = document.getElementById('filterClass')?.value;
           if (cls) url += `&cls=${encodeURIComponent(cls)}`;
+          const confidence = document.getElementById('filterConfidence')?.value || 'confirmed';
+          if (confidence && confidence !== 'all') url += `&confidence=${encodeURIComponent(confidence)}`;
 
           const res = await fetch(url);
           if (!res.ok) throw new Error(`HTTP error ${res.status}`);
@@ -2655,6 +2684,19 @@
             }
           }
         }
+
+        // Secondary safety trigger when scrolling down:
+        // If bottom sentinel is approaching or in viewport
+        if (!isAutoloading && allEvents.length > 0 && allEvents.length < totalEventsCount) {
+          const bottomSentinel = document.getElementById('eventsBottomSentinel');
+          if (bottomSentinel) {
+            const rect = bottomSentinel.getBoundingClientRect();
+            const clientHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+            if (rect.top <= clientHeight + 600) {
+              autoloadNextBatch();
+            }
+          }
+        }
       }
 
       window.addEventListener('scroll', updateBackToTopAndScrollTriggers, { passive: true });
@@ -2664,18 +2706,27 @@
 
     function getMaxClassConfidenceList(objects) {
       if (!objects || !objects.length) return [];
-      const maxByClass = {};
+      const byClass = {};
       objects.forEach(obj => {
         const cls = obj.class || 'object';
         const conf = obj.confidence || 0;
-        if (!maxByClass[cls] || conf > maxByClass[cls]) {
-          maxByClass[cls] = conf;
+        const isLow = Boolean(obj.low_confidence);
+        if (!byClass[cls]) {
+          byClass[cls] = { maxConf: conf, hasConfirmed: !isLow };
+        } else {
+          if (conf > byClass[cls].maxConf) {
+            byClass[cls].maxConf = conf;
+          }
+          if (!isLow) {
+            byClass[cls].hasConfirmed = true;
+          }
         }
       });
-      return Object.entries(maxByClass).map(([cls, maxConf]) => ({
+      return Object.entries(byClass).map(([cls, info]) => ({
         class: cls,
-        confidence: maxConf,
-        percent: Math.round(maxConf * 100)
+        confidence: info.maxConf,
+        percent: Math.round(info.maxConf * 100),
+        low_confidence: !info.hasConfirmed,
       }));
     }
 
@@ -2937,14 +2988,22 @@
       const timeFormatted = formatEventTime(event.detected_at);
         const dateFormatted = formatEventDate(event.detected_at);
         const classList = getMaxClassConfidenceList(event.objects);
-        const hasDetections = classList.length > 0;
+        const currentConfFilter = document.getElementById('filterConfidence')?.value || 'confirmed';
+        const displayList = (currentConfFilter === 'confirmed')
+          ? classList.filter(item => !item.low_confidence)
+          : classList;
+        const hasDetections = displayList.length > 0;
         let labelsPills = '';
         if (hasDetections) {
-          labelsPills = classList.map(item => {
-            return `<span class="bg-slate-900/90 text-brand-400 border border-brand-500/30 px-2 py-0.5 rounded-md font-semibold text-[11px]">${escapeHtml(item.class)} ${parseInt(item.percent, 10)}%</span>`;
+          labelsPills = displayList.map(item => {
+            if (item.low_confidence) {
+              return `<span class="bg-amber-950/60 text-amber-400 border border-amber-500/40 px-2 py-0.5 rounded-md font-semibold text-[11px] flex items-center gap-1"><i class="fa-solid fa-triangle-exclamation text-[10px] text-amber-400"></i> ${escapeHtml(item.class)} ${parseInt(item.percent, 10)}% <span class="text-[9px] uppercase tracking-wider bg-amber-500/20 text-amber-300 px-1 py-0.2 rounded font-bold">Low</span></span>`;
+            } else {
+              return `<span class="bg-slate-900/90 text-brand-400 border border-brand-500/30 px-2 py-0.5 rounded-md font-semibold text-[11px]">${escapeHtml(item.class)} ${parseInt(item.percent, 10)}%</span>`;
+            }
           }).join('');
         } else {
-          labelsPills = `<span class="bg-slate-800 text-slate-400 border border-slate-700/80 px-2 py-0.5 rounded-md font-medium text-[11px] flex items-center gap-1.5"><i class="fa-solid fa-ban text-[10px] text-slate-500"></i> No Detections</span>`;
+          labelsPills = `<span class="bg-slate-800 text-slate-400 border border-slate-700/80 px-2 py-0.5 rounded-md font-medium text-[11px] flex items-center gap-1.5"><i class="fa-solid fa-ban text-[10px] text-slate-500"></i> No Confirmed Detections</span>`;
         }
 
         const safeId = parseInt(event.id, 10);
@@ -3309,13 +3368,21 @@
       document.getElementById('modalFilenameText').textContent = (event.clip_path || '').split('/').pop();
 
       const classList = getMaxClassConfidenceList(event.objects);
+      const currentConfFilter = document.getElementById('filterConfidence')?.value || 'confirmed';
+      const displayList = (currentConfFilter === 'confirmed')
+        ? classList.filter(item => !item.low_confidence)
+        : classList;
       const pillsContainer = document.getElementById('modalDetectionsPills');
-      if (classList.length > 0) {
-        pillsContainer.innerHTML = classList.map(item => {
-          return `<span class="bg-brand-500/10 text-brand-400 border border-brand-500/30 px-2.5 py-1 rounded-lg font-semibold text-xs">${escapeHtml(item.class)} (${parseInt(item.percent, 10)}%)</span>`;
+      if (displayList.length > 0) {
+        pillsContainer.innerHTML = displayList.map(item => {
+          if (item.low_confidence) {
+            return `<span class="bg-amber-950/60 text-amber-400 border border-amber-500/40 px-2.5 py-1 rounded-lg font-semibold text-xs flex items-center gap-1.5"><i class="fa-solid fa-triangle-exclamation text-amber-400 text-xs"></i> ${escapeHtml(item.class)} (${parseInt(item.percent, 10)}%) <span class="text-[9px] uppercase tracking-wider bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded font-bold">Low</span></span>`;
+          } else {
+            return `<span class="bg-brand-500/10 text-brand-400 border border-brand-500/30 px-2.5 py-1 rounded-lg font-semibold text-xs">${escapeHtml(item.class)} (${parseInt(item.percent, 10)}%)</span>`;
+          }
         }).join('');
       } else {
-        pillsContainer.innerHTML = `<span class="bg-slate-800 text-slate-400 border border-slate-700/80 px-2.5 py-1 rounded-lg font-medium text-xs flex items-center gap-1.5"><i class="fa-solid fa-ban text-slate-500"></i> No Objects Detected</span>`;
+        pillsContainer.innerHTML = `<span class="bg-slate-800 text-slate-400 border border-slate-700/80 px-2.5 py-1 rounded-lg font-medium text-xs flex items-center gap-1.5"><i class="fa-solid fa-ban text-slate-500"></i> No Confirmed Detections</span>`;
       }
 
       const videoUrl = `/api/v1/events/${event.id}/video`;
@@ -3648,9 +3715,11 @@
         }
       }
 
-      // 2. Detection Tuning (Conf threshold, Sample FPS, Min Keyframes, Target Objects): Allowed over WAN!
+      // 2. Detection Tuning (Conf threshold, Low conf floor, Sample FPS, Min Keyframes, Target Objects): Allowed over WAN!
       const globalConfInp = document.getElementById('inpGlobalConf');
       if (globalConfInp) globalConfInp.disabled = false;
+      const globalLowConfInp = document.getElementById('inpGlobalLowConf');
+      if (globalLowConfInp) globalLowConfInp.disabled = false;
       const globalFpsInp = document.getElementById('inpGlobalSampleFps');
       if (globalFpsInp) globalFpsInp.disabled = false;
       const globalKeyframesInp = document.getElementById('inpGlobalMinKeyframes');
@@ -3834,6 +3903,12 @@
         populateYoloModelDropdown();
         document.getElementById('inpGlobalConf').value = globalConfPercent;
         document.getElementById('valGlobalConf').textContent = globalConfPercent + '%';
+        const globalLowConfVal = currentSettings.low_confidence_threshold !== undefined ? currentSettings.low_confidence_threshold : 0.15;
+        const globalLowConfPercent = Math.round(globalLowConfVal * 100);
+        const inpLowConf = document.getElementById('inpGlobalLowConf');
+        if (inpLowConf) inpLowConf.value = globalLowConfPercent;
+        const valLowConf = document.getElementById('valGlobalLowConf');
+        if (valLowConf) valLowConf.textContent = globalLowConfPercent + '%';
         document.getElementById('inpGlobalSampleFps').value = currentSettings.sample_fps !== undefined ? currentSettings.sample_fps : 1.0;
         document.getElementById('inpGlobalMinKeyframes').value = currentSettings.min_clip_keyframes !== undefined ? currentSettings.min_clip_keyframes : 5;
         document.getElementById('inpGlobalVidStride').value = currentSettings.vid_stride || 30;
@@ -5133,6 +5208,8 @@
       const editor = document.getElementById('rawYamlEditor');
       const globalConfVal = cfg.confidence_threshold !== undefined ? cfg.confidence_threshold : 0.45;
       const globalConfPct = Math.round(globalConfVal * 100);
+      const globalLowConfVal = cfg.low_confidence_threshold !== undefined ? cfg.low_confidence_threshold : 0.15;
+      const globalLowConfPct = Math.round(globalLowConfVal * 100);
       const targetClsYaml = (globalTargetClasses && globalTargetClasses.length > 0 ? globalTargetClasses : ['person', 'car', 'dog'])
         .map(e => `  - "${e}"`).join('\n');
       const globalClassConfYaml = cfg.class_confidence_thresholds && Object.keys(cfg.class_confidence_thresholds).length > 0
@@ -5141,6 +5218,7 @@
       editor.value = `# Sightline Configuration
 yolo_model: ${cfg.yolo_model || 'yolo11s.pt'}
 confidence_threshold: ${globalConfVal}  # ${globalConfPct}%
+low_confidence_threshold: ${globalLowConfVal}  # ${globalLowConfPct}%
 ${globalClassConfYaml}sample_fps: ${cfg.sample_fps !== undefined ? cfg.sample_fps : 1.0}
 min_clip_keyframes: ${cfg.min_clip_keyframes !== undefined ? cfg.min_clip_keyframes : 5}
 vid_stride: ${cfg.vid_stride || 30}
@@ -5278,12 +5356,15 @@ apprise_urls:
         const minKeyframesVal = parseInt(document.getElementById('inpGlobalMinKeyframes').value, 10);
         const globalConfVal = parseFloat(document.getElementById('inpGlobalConf').value);
         const globalConfFloat = Math.round(globalConfVal > 1 ? globalConfVal : globalConfVal * 100) / 100;
+        const globalLowConfVal = parseFloat(document.getElementById('inpGlobalLowConf')?.value || '15');
+        const globalLowConfFloat = Math.round(globalLowConfVal > 1 ? globalLowConfVal : globalLowConfVal * 100) / 100;
 
         const payload = {
           yolo_model: getSelectedYoloModel(),
           yolo_model_sha256: getSelectedYoloModelSha256(),
           target_classes: globalTargetClasses,
           confidence_threshold: globalConfFloat,
+          low_confidence_threshold: globalLowConfFloat,
           class_confidence_thresholds: currentSettings.class_confidence_thresholds || {},
           sample_fps: sampleFpsVal,
           min_clip_keyframes: isNaN(minKeyframesVal) ? 5 : minKeyframesVal,

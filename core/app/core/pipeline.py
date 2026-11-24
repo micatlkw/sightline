@@ -264,6 +264,11 @@ class Pipeline:
         # Resolve per-camera target classes and confidence threshold
         target_classes = self._settings.get_camera_target_classes(camera_name)
         conf_threshold = self._settings.get_camera_confidence_threshold(camera_name)
+        low_conf_threshold = (
+            self._settings.get_camera_low_confidence_threshold(camera_name)
+            if hasattr(self._settings, "get_camera_low_confidence_threshold")
+            else getattr(self._settings, "low_confidence_threshold", 0.15)
+        )
         class_conf_thresholds = (
             self._settings.get_camera_class_confidence_thresholds(camera_name)
             if hasattr(self._settings, "get_camera_class_confidence_thresholds")
@@ -338,6 +343,7 @@ class Pipeline:
                 class_conf_thresholds,
                 True,  # request frames for async GIF rendering
                 _on_early_detection,
+                low_conf_threshold,
             )
 
             if isinstance(detection_res, tuple) and len(detection_res) == 2:
@@ -380,7 +386,7 @@ class Pipeline:
                     if sent
                     else f"notification: cooldown active, delay: {delay_str}"
                 )
-                det_summary = ", ".join(f"{d.class_name} ({d.confidence:.0%})" for d in detections)
+                det_summary = ", ".join(f"{d.class_name} ({d.confidence:.0%}{' [low]' if d.low_confidence else ''})" for d in detections)
                 logger.info(
                     f"[pipeline] ✓ {final_path.name} (camera: {event.camera_name}): "
                     f"{len(detections)} detection(s) [{det_summary}] → event #{event.id} ({status_note})\n"
@@ -403,24 +409,39 @@ class Pipeline:
                 event = await self._db.save_event(final_path, detections, camera_name=camera_name)
                 self._bus.publish("detection", event.to_dict())
 
-                notify_res = await self._notifier.notify(event, cooldown_seconds=camera_cooldown)
-                sent = notify_res is not False
-                if sent:
-                    await self._db.mark_notified(event.id)
+                confirmed_objects = [obj for obj in event.objects if not obj.get("low_confidence")]
+                if confirmed_objects:
+                    # Alert strictly on confirmed objects to prevent low confidence noise
+                    notify_event = EventRecord(
+                        id=event.id,
+                        clip_path=event.clip_path,
+                        camera_name=event.camera_name,
+                        detected_at=event.detected_at,
+                        objects=confirmed_objects,
+                        thumbnail=event.thumbnail,
+                        notified=event.notified,
+                    )
+                    notify_res = await self._notifier.notify(notify_event, cooldown_seconds=camera_cooldown)
+                    sent = notify_res is not False
+                    if sent:
+                        await self._db.mark_notified(event.id)
 
-                notified_at = datetime.now().astimezone()
-                delay_seconds = (notified_at - clip_recorded_dt).total_seconds()
-                delay_str = format_duration(delay_seconds)
-                status_note = (
-                    f"notification delay: {delay_str}"
-                    if sent
-                    else f"notification: cooldown active, delay: {delay_str}"
-                )
-                det_summary = ", ".join(f"{obj['class']} ({obj['confidence']:.0%})" for obj in event.objects)
+                    notified_at = datetime.now().astimezone()
+                    delay_seconds = (notified_at - clip_recorded_dt).total_seconds()
+                    delay_str = format_duration(delay_seconds)
+                    status_note = (
+                        f"notification delay: {delay_str}"
+                        if sent
+                        else f"notification: cooldown active, delay: {delay_str}"
+                    )
+                else:
+                    status_note = "notification: silent (low confidence only)"
+
+                det_summary = ", ".join(f"{obj['class']} ({obj['confidence']:.0%}{' [low]' if obj.get('low_confidence') else ''})" for obj in event.objects)
                 logger.info(
                     f"[pipeline] ✓ {final_path.name} (camera: {event.camera_name}): "
                     f"{len(detections)} detection(s) [{det_summary}] → event #{event.id} ({status_note})\n"
-                    f"           └─ Latency Breakdown ({delay_str} alert delay):\n"
+                    f"           └─ Latency Breakdown ({elapsed_total:.2f}s total):\n"
                     f"              • Camera Recording           : {video_dur:.1f}s\n"
                     f"              • Camera Finalize & Sync Lag : {sync_lag:.2f}s (camera EOF -> NAS arrival)\n"
                     f"              • Queue Wait                 : {queue_wait:.2f}s\n"

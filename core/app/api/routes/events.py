@@ -236,6 +236,7 @@ async def list_events(
     date: str | None = Query(None, max_length=32, pattern=r"^\d{4}(-\d{2}(-\d{2})?)?$", description="Filter by date YYYY-MM-DD"),
     start_date: str | None = Query(None, max_length=32, description="Start date ISO/YYYY-MM-DD"),
     end_date: str | None = Query(None, max_length=32, description="End date ISO/YYYY-MM-DD"),
+    confidence: str | None = Query(None, pattern=r"^(all|confirmed|low)$", description="Filter by confidence level: all, confirmed, or low"),
     limit: int = Query(10, ge=1, le=500),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -254,6 +255,7 @@ async def list_events(
         end_date=end_date,
         limit=limit,
         offset=offset,
+        confidence=confidence,
     )
     total = await db.get_events_count(
         camera=camera,
@@ -261,6 +263,7 @@ async def list_events(
         date=date,
         start_date=start_date,
         end_date=end_date,
+        confidence=confidence,
     )
     return {
         "events": [e.to_dict() for e in events],

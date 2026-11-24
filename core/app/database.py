@@ -136,6 +136,40 @@ class Database:
         except Exception as e:
             logger.warning(f"Could not prune expired token revocations: {e}")
 
+        # Ensure low_confidence flags in events.objects reflect max class confidence
+        # (if any detection of a class was confirmed, no detection of that class is marked low_confidence).
+        try:
+            async with self._conn.execute(
+                "SELECT id, objects FROM events WHERE objects LIKE '%\"low_confidence\": true%'"
+            ) as cur:
+                rows = await cur.fetchall()
+            updates = []
+            for row in rows:
+                raw_objs = row["objects"]
+                if not raw_objs:
+                    continue
+                try:
+                    objs = json.loads(raw_objs)
+                    confirmed_classes = {
+                        o.get("class") for o in objs
+                        if isinstance(o, dict) and o.get("class") and not o.get("low_confidence")
+                    }
+                    modified = False
+                    for o in objs:
+                        if isinstance(o, dict) and o.get("class") in confirmed_classes and o.get("low_confidence"):
+                            o["low_confidence"] = False
+                            modified = True
+                    if modified:
+                        updates.append((json.dumps(objs), row["id"]))
+                except Exception:
+                    continue
+            if updates:
+                await self._conn.executemany("UPDATE events SET objects = ? WHERE id = ?", updates)
+                await self._conn.commit()
+                logger.info(f"[database] Normalized low-confidence flags for {len(updates)} legacy event(s)")
+        except Exception as e:
+            logger.debug(f"[database] low-confidence normalization notice: {e}")
+
         logger.info(f"Database connected: {self._db_path}")
 
     async def recover_unindexed_events(self, days: int = 3, full: bool = False) -> int:
@@ -203,12 +237,16 @@ class Database:
                 if mp4_path.name in known_filenames:
                     continue
 
-                # Parse detection suffix (support -none for zero-detection clips)
+                # Parse detection suffix (support -none for zero-detection clips and -low- tokens)
                 objects = []
                 if not stem.endswith("-none"):
                     suffix_part = stem.split("-", 1)[1]
                     raw_tokens = suffix_part.split("-")
+                    is_low = False
                     for token in raw_tokens:
+                        if token.lower() == "low":
+                            is_low = True
+                            continue
                         m = re.match(r"^(\d+)([a-zA-Z_]+)$", token)
                         if m:
                             count, cls_name = int(m.group(1)), m.group(2)
@@ -216,19 +254,21 @@ class Database:
                                 objects.append({
                                     "class": cls_name,
                                     "class_id": 0,
-                                    "confidence": 0.85,
+                                    "confidence": 0.30 if is_low else 0.85,
                                     "timestamp_sec": 0.0,
                                     "bbox": [0.0, 0.0, 1.0, 1.0],
                                     "keyframe_path": None,
+                                    "low_confidence": is_low,
                                 })
                         elif token and token != "none":
                             objects.append({
                                 "class": token,
                                 "class_id": 0,
-                                "confidence": 0.85,
+                                "confidence": 0.30 if is_low else 0.85,
                                 "timestamp_sec": 0.0,
                                 "bbox": [0.0, 0.0, 1.0, 1.0],
                                 "keyframe_path": None,
+                                "low_confidence": is_low,
                             })
 
                 if not objects and not stem.endswith("-none"):
@@ -391,6 +431,9 @@ class Database:
                     thumbnail = str(c)
                     break
 
+        confirmed_classes = {
+            d.class_name for d in detections if not getattr(d, "low_confidence", False)
+        }
         objects = [
             {
                 "class_id": d.class_id,
@@ -399,6 +442,7 @@ class Database:
                 "timestamp_sec": round(d.timestamp_sec, 2),
                 "bbox": d.bbox,
                 "keyframe_path": d.keyframe_path,
+                "low_confidence": False if d.class_name in confirmed_classes else bool(getattr(d, "low_confidence", False)),
             }
             for d in detections
         ]
@@ -435,6 +479,7 @@ class Database:
         end_date: Optional[str] = None,
         limit: int = 10,
         offset: int = 0,
+        confidence: Optional[str] = None,
     ) -> list[EventRecord]:
         query = "SELECT * FROM events WHERE 1=1"
         params: list = []
@@ -451,19 +496,50 @@ class Database:
             else:
                 query += " AND (camera_name = ? OR camera_name LIKE ?)"
                 params.extend([camera, f"{camera}_%"])
+
+        conf_norm = confidence.lower().strip() if confidence else "all"
+
         if cls:
             if cls.lower() in ("none", "no_detection", "no_detections", "empty"):
                 query += " AND (objects = '[]' OR objects IS NULL OR objects = '')"
             elif cls.lower() == "all_including_none":
-                pass  # Do not filter by detections
+                if conf_norm == "low":
+                    query += (
+                        " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                        " AND EXISTS (SELECT 1 FROM json_each(events.objects) AS o1 WHERE json_extract(o1.value, '$.low_confidence') = 1"
+                        " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) AS o2 WHERE json_extract(o2.value, '$.class') = json_extract(o1.value, '$.class')"
+                        " AND (json_extract(o2.value, '$.low_confidence') = 0 OR json_extract(o2.value, '$.low_confidence') IS NULL))))"
+                    )
+                elif conf_norm == "confirmed":
+                    query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL))"
             else:
-                # JSON text search — good enough for moderate event volumes
                 clean_cls = re.sub(r'[%_"\\]', '', cls).strip()
-                query += ' AND objects LIKE ?'
-                params.append(f'%"class": "{clean_cls}"%')
+                if conf_norm == "low":
+                    query += (
+                        " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                        " AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND json_extract(value, '$.low_confidence') = 1)"
+                        " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND (json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL)))"
+                    )
+                    params.extend([clean_cls, clean_cls])
+                elif conf_norm == "confirmed":
+                    query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND (json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL)))"
+                    params.append(clean_cls)
+                else:
+                    query += ' AND objects LIKE ?'
+                    params.append(f'%"class": "{clean_cls}"%')
         else:
-            # Default: show events with qualifying detections
-            query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
+            if conf_norm == "low":
+                query += (
+                    " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                    " AND EXISTS (SELECT 1 FROM json_each(events.objects) AS o1 WHERE json_extract(o1.value, '$.low_confidence') = 1"
+                    " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) AS o2 WHERE json_extract(o2.value, '$.class') = json_extract(o1.value, '$.class')"
+                    " AND (json_extract(o2.value, '$.low_confidence') = 0 OR json_extract(o2.value, '$.low_confidence') IS NULL))))"
+                )
+            elif conf_norm == "confirmed":
+                query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL))"
+            else:
+                query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
+
         if date:
             query += " AND detected_at LIKE ?"
             params.append(f"{date}%")
@@ -489,6 +565,7 @@ class Database:
         date: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        confidence: Optional[str] = None,
     ) -> int:
         query = "SELECT COUNT(*) as cnt FROM events WHERE 1=1"
         params: list = []
@@ -505,17 +582,50 @@ class Database:
             else:
                 query += " AND (camera_name = ? OR camera_name LIKE ?)"
                 params.extend([camera, f"{camera}_%"])
+
+        conf_norm = confidence.lower().strip() if confidence else "all"
+
         if cls:
             if cls.lower() in ("none", "no_detection", "no_detections", "empty"):
                 query += " AND (objects = '[]' OR objects IS NULL OR objects = '')"
             elif cls.lower() == "all_including_none":
-                pass
+                if conf_norm == "low":
+                    query += (
+                        " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                        " AND EXISTS (SELECT 1 FROM json_each(events.objects) AS o1 WHERE json_extract(o1.value, '$.low_confidence') = 1"
+                        " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) AS o2 WHERE json_extract(o2.value, '$.class') = json_extract(o1.value, '$.class')"
+                        " AND (json_extract(o2.value, '$.low_confidence') = 0 OR json_extract(o2.value, '$.low_confidence') IS NULL))))"
+                    )
+                elif conf_norm == "confirmed":
+                    query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL))"
             else:
                 clean_cls = re.sub(r'[%_"\\]', '', cls).strip()
-                query += ' AND objects LIKE ?'
-                params.append(f'%"class": "{clean_cls}"%')
+                if conf_norm == "low":
+                    query += (
+                        " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                        " AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND json_extract(value, '$.low_confidence') = 1)"
+                        " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND (json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL)))"
+                    )
+                    params.extend([clean_cls, clean_cls])
+                elif conf_norm == "confirmed":
+                    query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.class') = ? AND (json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL)))"
+                    params.append(clean_cls)
+                else:
+                    query += ' AND objects LIKE ?'
+                    params.append(f'%"class": "{clean_cls}"%')
         else:
-            query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
+            if conf_norm == "low":
+                query += (
+                    " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1"
+                    " AND EXISTS (SELECT 1 FROM json_each(events.objects) AS o1 WHERE json_extract(o1.value, '$.low_confidence') = 1"
+                    " AND NOT EXISTS (SELECT 1 FROM json_each(events.objects) AS o2 WHERE json_extract(o2.value, '$.class') = json_extract(o1.value, '$.class')"
+                    " AND (json_extract(o2.value, '$.low_confidence') = 0 OR json_extract(o2.value, '$.low_confidence') IS NULL))))"
+                )
+            elif conf_norm == "confirmed":
+                query += " AND (objects IS NOT NULL AND objects != '' AND objects != '[]' AND json_valid(objects) = 1 AND EXISTS (SELECT 1 FROM json_each(events.objects) WHERE json_extract(value, '$.low_confidence') = 0 OR json_extract(value, '$.low_confidence') IS NULL))"
+            else:
+                query += " AND (objects != '[]' AND objects IS NOT NULL AND objects != '')"
+
         if date:
             query += " AND detected_at LIKE ?"
             params.append(f"{date}%")
@@ -573,6 +683,9 @@ class Database:
         await self._conn.commit()
 
     async def update_event_objects(self, event_id: int, detections: list[DetectionItem]) -> None:
+        confirmed_classes = {
+            d.class_name for d in detections if not getattr(d, "low_confidence", False)
+        }
         objects = [
             {
                 "class_id": d.class_id,
@@ -581,6 +694,7 @@ class Database:
                 "timestamp_sec": round(d.timestamp_sec, 2),
                 "bbox": d.bbox,
                 "keyframe_path": d.keyframe_path,
+                "low_confidence": False if d.class_name in confirmed_classes else bool(getattr(d, "low_confidence", False)),
             }
             for d in detections
         ]

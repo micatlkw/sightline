@@ -208,3 +208,59 @@ async def test_prune_missing_events(test_db: Database, temp_dir: Path):
     assert await test_db.get_event(evt_exists.id) is not None
 
 
+@pytest.mark.asyncio
+async def test_confidence_filtering(test_db: Database, temp_dir: Path):
+    d_conf_person = DetectionItem(0, "person", 0.88, 0.5, [0, 0, 1, 1], low_confidence=False)
+    d_conf_dog = DetectionItem(16, "dog", 0.85, 1.0, [0, 0, 1, 1], low_confidence=False)
+    d_low_dog = DetectionItem(16, "dog", 0.22, 1.0, [0, 0, 1, 1], low_confidence=True)
+
+    c1 = temp_dir / "c1.mp4"
+    c2 = temp_dir / "c2.mp4"
+    c3 = temp_dir / "c3.mp4"
+    c4 = temp_dir / "c4.mp4"
+    c5 = temp_dir / "c5.mp4"
+
+    ev1 = await test_db.save_event(c1, [d_conf_person, d_low_dog], camera_name="Driveway", detected_at="2026-10-01T10:00:00")
+    ev2 = await test_db.save_event(c2, [d_low_dog], camera_name="Driveway", detected_at="2026-10-01T10:05:00")
+    ev3 = await test_db.save_event(c3, [d_conf_dog], camera_name="Driveway", detected_at="2026-10-01T10:10:00")
+    ev4 = await test_db.save_event(c4, [], camera_name="Driveway", detected_at="2026-10-01T10:15:00")
+    # ev5 has confirmed person, plus dog with low frame AND confirmed frame (max dog is confirmed)
+    ev5 = await test_db.save_event(c5, [d_conf_person, d_low_dog, d_conf_dog], camera_name="Driveway", detected_at="2026-10-01T10:20:00")
+
+    # 1. Default (all with qualifying detections)
+    res_all = await test_db.get_events()
+    assert set(e.id for e in res_all) == {ev1.id, ev2.id, ev3.id, ev5.id}
+
+    # 2. confidence="low" (ev5 is excluded because both person and dog reached confirmed threshold!)
+    res_low = await test_db.get_events(confidence="low")
+    assert set(e.id for e in res_low) == {ev1.id, ev2.id}
+    assert await test_db.get_events_count(confidence="low") == 2
+
+    # 3. confidence="confirmed"
+    res_conf = await test_db.get_events(confidence="confirmed")
+    assert set(e.id for e in res_conf) == {ev1.id, ev3.id, ev5.id}
+    assert await test_db.get_events_count(confidence="confirmed") == 3
+
+    # 4. cls="dog" + confidence
+    res_dog_low = await test_db.get_events(cls="dog", confidence="low")
+    assert set(e.id for e in res_dog_low) == {ev1.id, ev2.id}
+    assert await test_db.get_events_count(cls="dog", confidence="low") == 2
+
+    # ev5 has confirmed dog (0.85), so it matches confirmed
+    res_dog_conf = await test_db.get_events(cls="dog", confidence="confirmed")
+    assert set(e.id for e in res_dog_conf) == {ev3.id, ev5.id}
+    assert await test_db.get_events_count(cls="dog", confidence="confirmed") == 2
+
+    # 5. cls="person" + confidence
+    res_person_conf = await test_db.get_events(cls="person", confidence="confirmed")
+    assert set(e.id for e in res_person_conf) == {ev1.id, ev5.id}
+    res_person_low = await test_db.get_events(cls="person", confidence="low")
+    assert len(res_person_low) == 0
+
+    # 6. cls="none"
+    res_none = await test_db.get_events(cls="none")
+    assert [e.id for e in res_none] == [ev4.id]
+    assert await test_db.get_events_count(cls="none") == 1
+
+
+

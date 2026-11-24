@@ -15,6 +15,7 @@ class DetectionItem:
     timestamp_sec: float
     bbox: list[float]           # [x1, y1, x2, y2] normalised 0..1
     keyframe_path: str | None = None
+    low_confidence: bool = False
 
 
 @dataclass

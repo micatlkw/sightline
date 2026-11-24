@@ -21,6 +21,7 @@ class SettingsUpdateRequest(BaseModel):
     yolo_model_sha256: Optional[str] = None
     target_classes: Optional[List[Any]] = None
     confidence_threshold: Optional[float] = Field(None, ge=0.01, le=100.0)
+    low_confidence_threshold: Optional[float] = Field(None, ge=0.01, le=100.0)
     class_confidence_thresholds: Optional[Dict[str, float]] = None
     sample_fps: Optional[float] = Field(None, ge=0.1, le=30.0)
     min_clip_keyframes: Optional[int] = Field(None, ge=0, le=100)
@@ -36,6 +37,18 @@ class SettingsUpdateRequest(BaseModel):
             val = val / 100.0
         if not (0.01 <= val <= 1.0):
             raise ValueError("Confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
+        return round(val, 4)
+
+    @field_validator("low_confidence_threshold", mode="before")
+    @classmethod
+    def _validate_low_conf_threshold(cls, v: Any) -> float | None:
+        if v is None or v == "":
+            return None
+        val = float(v)
+        if val > 1.0:
+            val = val / 100.0
+        if not (0.01 <= val <= 1.0):
+            raise ValueError("Low confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
         return round(val, 4)
 
     @field_validator("class_confidence_thresholds", mode="before")

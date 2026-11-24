@@ -249,21 +249,11 @@ def extract_date_str(clip_path: Path) -> str:
     return extract_clip_datetime(clip_path).strftime("%Y-%m-%d")
 
 
-def format_detection_suffix(detections: list[DetectionItem]) -> str:
-    """
-    Builds the filename suffix based on detected objects.
-    - If no detections: returns '-none'.
-    - If detections: calculates the maximum simultaneous count of each class across
-      all keyframes, preserves order of first appearance, and prefixes all counts
-      (e.g. '-2person-1car', '-1person').
-    """
-    if not detections:
-        return "-none"
-
+def _compute_class_tokens(dets: list[DetectionItem]) -> list[str]:
     first_seen: dict[str, float] = {}
     frame_counts: dict[float, dict[str, int]] = {}
 
-    for d in detections:
+    for d in dets:
         cls_name = d.class_name.lower().replace(" ", "_")
         if cls_name not in first_seen:
             first_seen[cls_name] = d.timestamp_sec
@@ -278,8 +268,45 @@ def format_detection_suffix(detections: list[DetectionItem]) -> str:
                 max_counts[cls_name] = count
 
     ordered_classes = sorted(max_counts.keys(), key=lambda c: (first_seen.get(c, 0.0), c))
-    tokens = [f"{max_counts[c]}{c}" for c in ordered_classes]
-    return "-" + "-".join(tokens)
+    return [f"{max_counts[c]}{c}" for c in ordered_classes]
+
+
+def format_detection_suffix(detections: list[DetectionItem]) -> str:
+    """
+    Builds the filename suffix based on detected objects.
+    - If no detections: returns '-none'.
+    - If confirmed detections only: prefixes counts (e.g. '-2person-1car', '-1person').
+    - If low confidence detections only: prefixes with '-low-' (e.g. '-low-1person').
+    - If hybrid detections: prefixes confirmed followed by '-low-' (e.g. '-1person-low-1dog').
+    """
+    if not detections:
+        return "-none"
+
+    confirmed_dets = [d for d in detections if not getattr(d, "low_confidence", False)]
+    low_dets = [d for d in detections if getattr(d, "low_confidence", False)]
+
+    # If all detections are confirmed
+    if confirmed_dets and not low_dets:
+        return "-" + "-".join(_compute_class_tokens(confirmed_dets))
+
+    # If all detections are low confidence
+    if not confirmed_dets and low_dets:
+        return "-low-" + "-".join(_compute_class_tokens(low_dets))
+
+    # Hybrid: both confirmed and low confidence
+    confirmed_tokens = _compute_class_tokens(confirmed_dets)
+    confirmed_classes = {d.class_name.lower().replace(" ", "_") for d in confirmed_dets}
+    remaining_low_dets = [d for d in low_dets if d.class_name.lower().replace(" ", "_") not in confirmed_classes]
+    low_tokens = _compute_class_tokens(remaining_low_dets) if remaining_low_dets else []
+
+    if confirmed_tokens and low_tokens:
+        return "-" + "-".join(confirmed_tokens) + "-low-" + "-".join(low_tokens)
+    elif confirmed_tokens:
+        return "-" + "-".join(confirmed_tokens)
+    elif low_tokens:
+        return "-low-" + "-".join(low_tokens)
+    else:
+        return "-none"
 
 
 def init_system_timezone() -> None:
@@ -330,7 +357,7 @@ def format_local_datetime(iso_str: str) -> tuple[str, str]:
         return iso_str[:10], iso_str[11:19]
 
 
-def format_detected_objects_summary(objects: list[Any] | None) -> str:
+def format_detected_objects_summary(objects: list[Any] | None, ignore_low_confidence: bool = False) -> str:
     """
     Deduplicates detected objects by class name, finds the maximum confidence
     for each class, sorts unique classes descending by max confidence,
@@ -342,9 +369,13 @@ def format_detected_objects_summary(objects: list[Any] | None) -> str:
     max_conf_by_class: dict[str, float] = {}
     for obj in objects:
         if isinstance(obj, dict):
+            if ignore_low_confidence and obj.get("low_confidence"):
+                continue
             raw_cls = str(obj.get("class") or obj.get("class_name") or "").strip()
             conf_val = obj.get("confidence", 0.0)
         elif hasattr(obj, "class_name"):
+            if ignore_low_confidence and getattr(obj, "low_confidence", False):
+                continue
             raw_cls = str(getattr(obj, "class_name", "")).strip()
             conf_val = getattr(obj, "confidence", 0.0)
         else:

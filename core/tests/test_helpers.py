@@ -159,6 +159,40 @@ def test_format_detection_suffix():
     ]
     assert format_detection_suffix(d4) == "-1car-1person"
 
+    # 6. Low confidence only
+    d5 = [DetectionItem(0, "person", 0.2, 1.0, [0, 0, 1, 1], low_confidence=True)]
+    assert format_detection_suffix(d5) == "-low-1person"
+
+    # 7. Hybrid: confirmed and low confidence
+    d6 = [
+        DetectionItem(0, "person", 0.9, 1.0, [0, 0, 1, 1], low_confidence=False),
+        DetectionItem(16, "dog", 0.25, 2.0, [0, 0, 1, 1], low_confidence=True),
+    ]
+    assert format_detection_suffix(d6) == "-1person-low-1dog"
+
+    # 8. Hybrid with same class both confirmed and low
+    d7 = [
+        DetectionItem(0, "person", 0.9, 1.0, [0, 0, 1, 1], low_confidence=False),
+        DetectionItem(0, "person", 0.2, 2.0, [0, 0, 1, 1], low_confidence=True),
+    ]
+    assert format_detection_suffix(d7) == "-1person"
+
+
+def test_format_detected_objects_summary():
+    from app.core.helpers import format_detected_objects_summary
+
+    objs = [
+        {"class": "person", "confidence": 0.85, "low_confidence": False},
+        {"class": "dog", "confidence": 0.25, "low_confidence": True},
+    ]
+    assert format_detected_objects_summary(objs, ignore_low_confidence=True) == "Person"
+    assert format_detected_objects_summary(objs, ignore_low_confidence=False) == "Person, Dog"
+
+    low_only = [{"class": "dog", "confidence": 0.25, "low_confidence": True}]
+    assert format_detected_objects_summary(low_only, ignore_low_confidence=True) == "Motion"
+    assert format_detected_objects_summary(low_only, ignore_low_confidence=False) == "Dog"
+
+
 
 def test_format_local_datetime():
     from app.core.helpers import format_local_datetime

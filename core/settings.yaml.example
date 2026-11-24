@@ -30,6 +30,9 @@ target_classes:
 # Global minimum confidence threshold (0.01 - 1.0)
 confidence_threshold: 0.45
 
+# Floor threshold for classifying low-confidence detections (0.01 - 1.0)
+low_confidence_threshold: 0.15
+
 # Keyframe sample interval: 30 = 1 frame/sec for 30fps video clips
 vid_stride: 30
 

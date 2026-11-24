@@ -10,12 +10,25 @@ def test_settings_defaults():
     assert s.yolo_model == "yolo11n.pt"
     assert s.target_classes == [0, 2, 3, 7, 15, 16, 21]
     assert s.confidence_threshold == 0.45
+    assert s.low_confidence_threshold == 0.15
     assert s.vid_stride == 30
     assert s.watch_use_polling is False
     assert s.clip_stable_seconds == 2.0
     assert s.scan_on_startup is True
     assert s.allow_lan_auth_bypass is True
     assert s.alert_cooldown_seconds == 60
+
+
+def test_settings_low_confidence_threshold():
+    from app.config import CameraConfig
+    s = Settings(_env_file=None, low_confidence_threshold=0.20)
+    assert s.low_confidence_threshold == 0.20
+    assert s.get_camera_low_confidence_threshold("CAM01") == 0.20
+
+    cam = CameraConfig(name="Front", serial="CAM01", low_confidence_threshold=0.10)
+    s.cameras = [cam]
+    assert s.get_camera_low_confidence_threshold("CAM01") == 0.10
+    assert s.get_camera_low_confidence_threshold("CAM02") == 0.20
 
 
 def test_settings_scan_on_startup_override():

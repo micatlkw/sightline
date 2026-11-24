@@ -72,6 +72,7 @@ class YoloDetector:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._conf_threshold = settings.confidence_threshold
+        self._low_conf_threshold = getattr(settings, "low_confidence_threshold", 0.15)
         self._vid_stride = settings.vid_stride
         self._target_classes = settings.get_resolved_target_classes()
         self._thumbnails_dir = settings.thumbnails_dir
@@ -144,6 +145,7 @@ class YoloDetector:
         """Dynamically updates confidence threshold, vid_stride, target_classes, model, and camera mappings."""
         self._settings = settings
         self._conf_threshold = settings.confidence_threshold
+        self._low_conf_threshold = getattr(settings, "low_confidence_threshold", 0.15)
         self._vid_stride = settings.vid_stride
         self._target_classes = settings.get_resolved_target_classes()
         model_changed = getattr(self, "_current_model_name", None) != settings.yolo_model
@@ -160,7 +162,7 @@ class YoloDetector:
             self._warmup()
             logger.info(f"[detector] new YOLO model ready (path: {model_path})")
         logger.info(
-            f"[detector] settings updated: conf={self._conf_threshold}, "
+            f"[detector] settings updated: conf={self._conf_threshold}, low_conf={self._low_conf_threshold}, "
             f"vid_stride={self._vid_stride}, classes={self._target_classes}"
         )
 
@@ -305,6 +307,7 @@ class YoloDetector:
         class_conf_thresholds: dict[int, float] | None = None,
         return_frames: bool = False,
         on_early_detection: Callable[[list[DetectionItem], np.ndarray, float], None] | None = None,
+        low_conf_threshold: float | None = None,
     ) -> list[DetectionItem] | tuple[list[DetectionItem], list[np.ndarray]]:
         """
         Stream keyframes from *clip_path* at dynamically computed *vid_stride* intervals
@@ -330,7 +333,14 @@ class YoloDetector:
         else:
             effective_class_thresholds = {}
 
-        candidate_thresholds = [effective_conf]
+        if low_conf_threshold is not None:
+            effective_low_conf = low_conf_threshold
+        elif camera_name and hasattr(self._settings, "get_camera_low_confidence_threshold"):
+            effective_low_conf = self._settings.get_camera_low_confidence_threshold(camera_name)
+        else:
+            effective_low_conf = getattr(self, "_low_conf_threshold", 0.15)
+
+        candidate_thresholds = [effective_conf, effective_low_conf]
         if effective_class_thresholds:
             candidate_thresholds.extend(effective_class_thresholds.values())
         pre_filter_conf = min(candidate_thresholds)
@@ -402,6 +412,7 @@ class YoloDetector:
 
             if boxes is not None and len(boxes) > 0:
                 valid_indices: list[int] = []
+                box_low_conf: dict[int, bool] = {}
                 for i, box in enumerate(boxes):
                     conf = float(box.conf[0])
                     cls_id = int(box.cls[0])
@@ -410,10 +421,14 @@ class YoloDetector:
 
                     if conf >= target_thresh:
                         valid_indices.append(i)
+                        box_low_conf[i] = False
+                    elif conf >= effective_low_conf:
+                        valid_indices.append(i)
+                        box_low_conf[i] = True
                     else:
                         logger.debug(
                             f"[detector] {clip_path.name} @ {timestamp_sec:.1f}s: {cls_name} ({conf:.1%} conf) "
-                            f"below threshold ({target_thresh:.1%}) — filtered"
+                            f"below low confidence threshold ({effective_low_conf:.1%}) — filtered"
                         )
 
                 if valid_indices:
@@ -440,10 +455,11 @@ class YoloDetector:
                         cls_id = int(box.cls[0])
                         cls_name = self._model.names.get(cls_id) or _COCO_NAMES.get(cls_id, str(cls_id))
                         x1, y1, x2, y2 = box.xyxyn[0].tolist()
+                        is_low = box_low_conf.get(i, False)
 
                         logger.info(
                             f"[detector] {clip_path.name} @ {timestamp_sec:.1f}s: "
-                            f"detected {cls_name.upper()} ({conf:.1%} confidence, bbox=[{x1:.2f}, {y1:.2f}, {x2:.2f}, {y2:.2f}])"
+                            f"detected {cls_name.upper()} ({conf:.1%} confidence{' [LOW]' if is_low else ''}, bbox=[{x1:.2f}, {y1:.2f}, {x2:.2f}, {y2:.2f}])"
                         )
 
                         results.append(
@@ -459,16 +475,18 @@ class YoloDetector:
                                     round(y2, 4),
                                 ],
                                 keyframe_path=None,
+                                low_confidence=is_low,
                             )
                         )
 
-                    # Early progressive notification trigger on the very first detection frame
-                    if not early_notified and on_early_detection and results:
+                    # Early progressive notification trigger on the very first detection frame (confirmed only)
+                    confirmed_results = [r for r in results if not r.low_confidence]
+                    if not early_notified and on_early_detection and confirmed_results:
                         early_notified = True
                         try:
                             early_frame = annotated if annotated is not None else getattr(result, "orig_img", None)
                             if early_frame is not None:
-                                on_early_detection(results.copy(), early_frame, timestamp_sec, keyframe_num + 1)
+                                on_early_detection(confirmed_results.copy(), early_frame, timestamp_sec, keyframe_num + 1)
                         except Exception as e:
                             logger.debug(f"[detector] early detection callback notice: {e}")
                 else:
@@ -487,13 +505,22 @@ class YoloDetector:
         kfps = (keyframe_num / elapsed_sec) if elapsed_sec > 0 else 0.0
 
         if results:
+            # Post-process detections: an object class is confirmed if its max confidence
+            # across the clip meets the primary threshold. If an object class achieved confirmed
+            # confidence, any lower-confidence keyframe detection for that class is part of the
+            # confirmed object detection and must not be marked low_confidence.
+            confirmed_classes = {d.class_name for d in results if not d.low_confidence}
+            for d in results:
+                if d.class_name in confirmed_classes:
+                    d.low_confidence = False
+
             # Save single-frame snapshot immediately for instant notification (< 2ms)
             snapshot_frame = best_frame if best_frame is not None else (collected_frames[0] if collected_frames else None)
             thumb_path = self._save_snapshot_thumbnail(snapshot_frame, clip_path, results, camera_name=camera_name)
             if thumb_path:
                 for det in results:
                     det.keyframe_path = thumb_path
-            summary = ", ".join(f"{d.class_name} ({d.confidence:.0%})" for d in results)
+            summary = ", ".join(f"{d.class_name} ({d.confidence:.0%}{' [low]' if d.low_confidence else ''})" for d in results)
             logger.info(
                 f"[detector] {clip_path.name} [{fps_info} -> stride {effective_stride} @ {fps:.1f}fps]: "
                 f"processed {keyframe_num} keyframes in {elapsed_sec:.2f}s "

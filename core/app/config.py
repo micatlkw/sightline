@@ -147,6 +147,7 @@ class CameraConfig(BaseModel):
     enabled: bool = True
     target_classes: list[Any] | None = None
     confidence_threshold: float | None = None
+    low_confidence_threshold: float | None = None
     class_confidence_thresholds: dict[str, float] | None = None
     sample_fps: float | None = Field(None, ge=0.1, le=30.0, description="Keyframes sampled per second of video")
     cooldown_seconds: int | None = None
@@ -185,6 +186,18 @@ class CameraConfig(BaseModel):
             val = val / 100.0
         if not (0.01 <= val <= 1.0):
             raise ValueError("Confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
+        return round(val, 4)
+
+    @field_validator("low_confidence_threshold", mode="before")
+    @classmethod
+    def _validate_low_confidence_threshold(cls, v: Any) -> float | None:
+        if v is None or v == "":
+            return None
+        val = float(v)
+        if val > 1.0:
+            val = val / 100.0
+        if not (0.01 <= val <= 1.0):
+            raise ValueError("Low confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
         return round(val, 4)
 
     @field_validator("class_confidence_thresholds", mode="before")
@@ -276,6 +289,7 @@ class Settings(BaseSettings):
     # COCO IDs / names: person(0), car(2), motorcycle(3), truck(7), cat(15), dog(16), bear(21)
     target_classes: list[Any] = [0, 2, 3, 7, 15, 16, 21]
     confidence_threshold: float = 0.45
+    low_confidence_threshold: float = 0.15
     class_confidence_thresholds: dict[str, float] = Field(default_factory=dict)
     # Keyframe sampling rate in FPS (e.g. 1.0 = 1 frame/sec, 2.0 = 2 frames/sec, 0.5 = 1 frame every 2s)
     sample_fps: float = Field(1.0, ge=0.1, le=30.0)
@@ -384,6 +398,18 @@ class Settings(BaseSettings):
             val = val / 100.0
         if not (0.01 <= val <= 1.0):
             raise ValueError("Confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
+        return round(val, 4)
+
+    @field_validator("low_confidence_threshold", mode="before")
+    @classmethod
+    def _validate_global_low_confidence_threshold(cls, v: Any) -> float:
+        if v is None or v == "":
+            return 0.15
+        val = float(v)
+        if val > 1.0:
+            val = val / 100.0
+        if not (0.01 <= val <= 1.0):
+            raise ValueError("Low confidence threshold must be between 0.01 and 1.0 (or 1% and 100%)")
         return round(val, 4)
 
     @field_validator("class_confidence_thresholds", mode="before")
@@ -562,6 +588,13 @@ class Settings(BaseSettings):
             return cam.confidence_threshold
         return self.confidence_threshold
 
+    def get_camera_low_confidence_threshold(self, camera_name_or_serial: str) -> float:
+        """Returns per-camera low-confidence threshold override or global threshold."""
+        cam = self.get_camera_config(camera_name_or_serial)
+        if cam is not None and cam.low_confidence_threshold is not None:
+            return cam.low_confidence_threshold
+        return self.low_confidence_threshold
+
     def get_camera_class_confidence_thresholds(self, camera_name_or_serial: str) -> dict[int, float]:
         """
         Returns a dictionary of integer COCO class ID -> float confidence threshold
@@ -636,6 +669,7 @@ class Settings(BaseSettings):
             "yolo_model_sha256": self.yolo_model_sha256,
             "target_classes": self.target_classes,
             "confidence_threshold": self.confidence_threshold,
+            "low_confidence_threshold": self.low_confidence_threshold,
             "class_confidence_thresholds": self.class_confidence_thresholds,
             "sample_fps": self.sample_fps,
             "min_clip_keyframes": self.min_clip_keyframes,
@@ -712,6 +746,8 @@ class Settings(BaseSettings):
                     cam_lines.append(f"    target_classes: {json.dumps(cam.target_classes)}")
                 if cam.confidence_threshold is not None:
                     cam_lines.append(f"    confidence_threshold: {cam.confidence_threshold}")
+                if cam.low_confidence_threshold is not None:
+                    cam_lines.append(f"    low_confidence_threshold: {cam.low_confidence_threshold}")
                 if cam.class_confidence_thresholds is not None:
                     cam_lines.append("    class_confidence_thresholds:")
                     for cls_name, thresh in cam.class_confidence_thresholds.items():
@@ -781,6 +817,9 @@ target_classes:
 
 # Global minimum confidence threshold (0.01 - 1.0)
 confidence_threshold: {self.confidence_threshold}
+
+# Floor threshold for classifying low-confidence detections (0.01 - 1.0)
+low_confidence_threshold: {self.low_confidence_threshold}
 
 # Class-specific confidence overrides (optional)
 # Any unlisted class inherits the global confidence_threshold above.
